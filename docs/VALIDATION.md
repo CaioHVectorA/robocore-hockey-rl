@@ -1,6 +1,26 @@
 # Validação
 
-## Referência comercial HockeyBot — revisão atual
+## Bancada de treino configurável — revisão atual
+
+Executada em 21/10/2026. **74 testes aprovados**, Ruff, formatação, compilação dos módulos e diff sem erros. O [guia da bancada](TRAINING_WORKBENCH.md) descreve as operações e seus limites.
+
+As verificações novas incluem presets, quantidade real de corpos e observações em solo e times assimétricos, chegada sem gol versus gol físico, pesos de recompensa, rejeição de gol contra como sucesso, persistência dos parâmetros, self-play sem fallback tático na coleta e transferência de pesos sem reutilizar o otimizador. Eventos sintéticos de mouse e teclado confirmam que o preset e a edição de learning rate chegam à configuração enviada ao worker.
+
+Um teste com processo Python real inicia coleta solo, lê seus quadros, pausa sem avançar as transições, continua, encerra cooperativamente e recarrega o checkpoint com otimizador. Também confirma que o benchmark lê a tarefa e a quantidade de robôs do checkpoint. A interface completa foi executada com SDL dummy, incluindo início de treino, frames reais de coleta, gráficos, parâmetros e encerramento com salvamento.
+
+Uma execução de integração da janela com **Solo · ir ao disco**, dois ambientes, episódios de dois segundos e ritmo 5× foi encerrada ao fechar a janela: salvou 1.214 transições e 38 atualizações. A retomada preservou os contadores, adicionou 32 transições e chegou à atualização 39. Essa execução curta existe para testar o fluxo da interface, não para produzir uma política pronta.
+
+Avaliação posterior da tarefa de chegada, seeds 10000–10001 e limite de dois segundos por episódio:
+
+| Controlador | Sucessos de chegada | Derrotas | Cortes por tempo |
+|---|---:|---:|---:|
+| Ações zero | 0 | 0 | 2 |
+| Bot tático | 2 | 0 | 0 |
+| PPO da integração curta | 0 | 0 | 2 |
+
+Sucesso de chegada não equivale a gol. O teste curto não demonstrou que o PPO aprendeu a tarefa. O treino e a avaliação usam configurações persistidas; a visualização identifica prévia tática, coleta exploratória, avaliação congelada e replay separadamente. Não houve acionamento de hardware ou validação óptica real.
+
+## Histórico: referência comercial HockeyBot
 
 Em 21/10/2026, a geometria foi substituída pela referência comercial `robocore-hockeybot-stock-photo-v1`. Os dados publicados e as hipóteses estão em [HOCKEYBOT_STOCK.md](HOCKEYBOT_STOCK.md). O contorno foi reconstruído pela foto do fabricante; não houve medição do chassi físico.
 

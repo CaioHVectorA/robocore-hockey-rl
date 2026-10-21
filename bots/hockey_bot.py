@@ -27,7 +27,7 @@ class HeuristicHockeyBot:
         p = state.puck
         sign = 1 if self.team == 0 else -1
         actions = []
-        for role in range(engine.robots_per_team):
+        for role in range(len(engine.blue_robots if self.team == 0 else engine.red_robots)):
             r = state.robots.get(self.team * 3 + role, EntityState())
             if not r.valid(state.timestamp) or not p.valid(state.timestamp):
                 actions.append((0.0, 0.0))
