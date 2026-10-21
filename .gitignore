@@ -7,3 +7,10 @@ env/
 .idea/
 .vscode/
 *.swp
+checkpoints/*.pt
+checkpoints/*.tmp
+runs/
+.pytest_cache/
+.ruff_cache/
+firmware/hockey_v2/.pio/
+firmware/hockey_v2/include/pins.h

@@ -1,56 +1,96 @@
-"""
-Treinador PPO (Proximal Policy Optimization) para o Hockey de Robôs RoboCore.
-Controla continuamente a velocidade das duas rodas da placa Vespa (u_left, u_right) em [-1, 1]^2.
-"""
+"""Parameter-sharing PPO with independent temporal trajectories per robot."""
 
 from __future__ import annotations
-
-from typing import List, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+import math
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn
 from torch.distributions import Normal
+from vision.state import OBS_DIM, OBSERVATION_VERSION
+
+
+def compute_gae(rewards, values, next_values, terminated, truncated, gamma=0.995, gae_lambda=0.95):
+    """All arrays [time, agent]. Bootstrap truncations, stop traces at resets."""
+    rewards = np.asarray(rewards, np.float32)
+    values = np.asarray(values, np.float32)
+    next_values = np.asarray(next_values, np.float32)
+    terminated = np.asarray(terminated, bool)
+    truncated = np.asarray(truncated, bool)
+    if not all(x.shape == rewards.shape for x in (values, next_values, terminated, truncated)):
+        raise ValueError("GAE tensors must have matching time/agent axes")
+    adv = np.zeros_like(rewards)
+    tail = np.zeros(rewards.shape[1:], np.float32)
+    for t in range(len(rewards) - 1, -1, -1):
+        delta = rewards[t] + gamma * next_values[t] * (~terminated[t]) - values[t]
+        tail = delta + gamma * gae_lambda * (~(terminated[t] | truncated[t])) * tail
+        adv[t] = tail
+    return adv, adv + values
 
 
 class HockeyPolicyNet(nn.Module):
-    """Rede Ator-Crítico contínua leve para inferência em tempo real (< 0.2 ms)."""
-
-    def __init__(self, obs_dim: int = 27, act_dim: int = 2, hidden_dim: int = 128):
+    def __init__(self, obs_dim=OBS_DIM, act_dim=2, hidden_dim=128):
         super().__init__()
-        self.actor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, act_dim),
-            nn.Tanh(),
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
-        )
-        self.log_std = nn.Parameter(torch.full((act_dim,), -0.30))
 
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.actor(obs), self.critic(obs)
+        def mlp(out):
+            return nn.Sequential(
+                nn.Linear(obs_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, out),
+            )
+
+        self.actor = mlp(act_dim)
+        self.critic = mlp(1)
+        self.log_std = nn.Parameter(torch.full((act_dim,), -0.8))
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, math.sqrt(2))
+                nn.init.zeros_(module.bias)
+        nn.init.orthogonal_(self.actor[-1].weight, 0.01)
+        nn.init.orthogonal_(self.critic[-1].weight, 1.0)
+
+    def forward(self, obs):
+        return self.actor(obs), self.critic(obs).squeeze(-1)
+
+    def distribution(self, obs):
+        mean, value = self(obs)
+        return Normal(mean, self.log_std.clamp(-3, 0.5).exp()), value
+
+    def evaluate(self, obs, action):
+        dist, value = self.distribution(obs)
+        action = action.clamp(-1 + 1e-6, 1 - 1e-6)
+        latent = torch.atanh(action)
+        logp = (dist.log_prob(latent) - torch.log1p(-action.square())).sum(-1)
+        return logp, value
+
+
+@dataclass
+class Transition:
+    obs: np.ndarray
+    action: np.ndarray
+    logp: np.ndarray
+    reward: np.ndarray
+    value: np.ndarray
+    next_value: np.ndarray
+    terminated: np.ndarray
+    truncated: np.ndarray
 
 
 class HockeyPPOTrainer:
-    """Treinador PPO Multi-Agente com Parameter Sharing para Hockey 3v3."""
-
     def __init__(
         self,
-        obs_dim: int = 27,
-        act_dim: int = 2,
-        lr: float = 3e-4,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_eps: float = 0.2,
-        device: str = "cpu",
+        obs_dim=OBS_DIM,
+        act_dim=2,
+        lr=3e-4,
+        gamma=0.995,
+        gae_lambda=0.95,
+        clip_eps=0.2,
+        device="cpu",
+        seed=0,
+        target_kl=0.02,
     ):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -58,177 +98,196 @@ class HockeyPPOTrainer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_eps = clip_eps
+        self.target_kl = target_kl
         self.device = torch.device(device)
-
+        self.rng = np.random.default_rng(seed)
         self.net = HockeyPolicyNet(obs_dim, act_dim).to(self.device)
-        self.optimizer = optim.Adam(self.net.parameters(), lr=self.lr)
-
-        self.obs_buf: List[np.ndarray] = []
-        self.act_buf: List[np.ndarray] = []
-        self.logp_buf: List[float] = []
-        self.rew_buf: List[float] = []
-        self.val_buf: List[float] = []
-        self.done_buf: List[bool] = []
-
-        self.total_steps: int = 0
-        self.updates_count: int = 0
-        self.last_loss: float = 0.0
-
-    def reset_weights(self) -> None:
-        """Reinicializa todos os pesos para zero aprendizado ('Ficar Burro')."""
-        self.net = HockeyPolicyNet(self.obs_dim, self.act_dim).to(self.device)
-        self.optimizer = optim.Adam(self.net.parameters(), lr=self.lr)
-        self.clear_buffer()
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=lr, eps=1e-5)
+        self.buffer = []
         self.total_steps = 0
+        self.environment_steps = 0
         self.updates_count = 0
         self.last_loss = 0.0
+        self.metrics = {}
 
-    def clear_buffer(self) -> None:
-        self.obs_buf.clear()
-        self.act_buf.clear()
-        self.logp_buf.clear()
-        self.rew_buf.clear()
-        self.val_buf.clear()
-        self.done_buf.clear()
+    def reset_weights(self):
+        self.net = HockeyPolicyNet(self.obs_dim, self.act_dim).to(self.device)
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.lr, eps=1e-5)
+        self.buffer.clear()
+        self.total_steps = self.environment_steps = self.updates_count = 0
+
+    def clear_buffer(self):
+        self.buffer.clear()
+
+    @property
+    def buffer_steps(self):
+        return len(self.buffer)
 
     @torch.no_grad()
-    def select_action(
-        self, obs: np.ndarray, deterministic: bool = False
-    ) -> Tuple[np.ndarray, Any, Any]:
-        """
-        Calcula ações para 1 robô ou para todo o trio de robôs [3, 27] em paralelo.
-        """
-        obs_arr = np.asarray(obs, dtype=np.float32)
-        is_batch = (obs_arr.ndim == 2)
-        obs_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=self.device)
-        if not is_batch:
-            obs_t = obs_t.unsqueeze(0)
+    def select_action(self, obs, deterministic=False):
+        arr = np.asarray(obs, np.float32)
+        single = arr.ndim == 1
+        x = torch.as_tensor(arr, device=self.device)
+        if single:
+            x = x.unsqueeze(0)
+        dist, value = self.net.distribution(x)
+        action = torch.tanh(dist.mean if deterministic else dist.sample()).clamp(-1 + 1e-6, 1 - 1e-6)
+        logp, _ = self.net.evaluate(x, action)
+        actions, logps, values = action.cpu().numpy(), logp.cpu().numpy(), value.cpu().numpy()
+        return (actions[0], float(logps[0]), float(values[0])) if single else (actions, logps, values)
 
-        mean, val = self.net(obs_t)
-        std = torch.exp(torch.clamp(self.net.log_std, -1.8, 0.2))
-        dist = Normal(mean, std)
-
-        if deterministic:
-            action = mean
-            logp = torch.zeros(obs_t.shape[0], device=self.device)
-        else:
-            action = dist.sample()
-            logp = dist.log_prob(action).sum(dim=-1)
-
-        act_np = np.clip(action.cpu().numpy(), -1.0, 1.0)
-        val_np = val.squeeze(-1).cpu().numpy()
-        logp_np = logp.cpu().numpy()
-
-        if not is_batch:
-            return act_np[0], float(logp_np[0]), float(val_np[0])
-        return act_np, logp_np, val_np
+    @torch.no_grad()
+    def values(self, obs):
+        return self.net(torch.as_tensor(np.asarray(obs, np.float32), device=self.device))[1].cpu().numpy()
 
     def store_transition(
-        self,
-        obs: np.ndarray,
-        act: np.ndarray,
-        logp: Any,
-        rew: Any,
-        val: Any,
-        done: bool,
-    ) -> None:
-        """Armazena transição de um robô ou de toda a equipe 3v3."""
-        obs_arr = np.asarray(obs)
-        if obs_arr.ndim == 2 and obs_arr.shape[0] == 3:
-            indiv_rews = rew if isinstance(rew, (list, tuple, np.ndarray)) else [rew, rew, rew]
-            for i in range(3):
-                self.obs_buf.append(obs_arr[i])
-                self.act_buf.append(act[i])
-                self.logp_buf.append(float(logp[i]))
-                self.rew_buf.append(float(indiv_rews[i]))
-                self.val_buf.append(float(val[i]))
-                self.done_buf.append(done)
-                self.total_steps += 1
-        else:
-            self.obs_buf.append(obs_arr)
-            self.act_buf.append(act)
-            self.logp_buf.append(float(logp))
-            self.rew_buf.append(float(rew))
-            self.val_buf.append(float(val))
-            self.done_buf.append(done)
-            self.total_steps += 1
+        self, obs, act, logp, rew, val, terminated, truncated=False, *, next_obs, env_count=1
+    ):
+        obs = np.atleast_2d(np.asarray(obs, np.float32))
+        n = len(obs)
 
-    def update(self, epochs: int = 6, batch_size: int = 128) -> float:
-        n = len(self.rew_buf)
-        if n < 64:
+        def vector(x):
+            return np.broadcast_to(np.asarray(x), (n,)).copy()
+
+        next_value = np.asarray(self.values(np.atleast_2d(next_obs)), np.float32)
+        item = Transition(
+            obs.copy(),
+            np.asarray(act, np.float32).reshape(n, self.act_dim).copy(),
+            vector(logp),
+            vector(rew),
+            vector(val),
+            next_value,
+            vector(terminated).astype(bool),
+            vector(truncated).astype(bool),
+        )
+        if self.buffer and item.obs.shape != self.buffer[-1].obs.shape:
+            raise ValueError("Agent count changed within rollout")
+        self.buffer.append(item)
+        self.total_steps += n
+        if env_count < 1 or n % env_count:
+            raise ValueError("Invalid environment count")
+        self.environment_steps += env_count
+
+    def update(self, epochs=6, batch_size=256):
+        if not self.buffer:
             return 0.0
 
-        advantages = np.zeros(n, dtype=np.float32)
-        returns = np.zeros(n, dtype=np.float32)
-        gae = 0.0
-        next_val = 0.0
+        def stack(key):
+            return np.stack([getattr(t, key) for t in self.buffer])
 
-        for t in reversed(range(n)):
-            mask = 0.0 if self.done_buf[t] else 1.0
-            delta = self.rew_buf[t] + self.gamma * next_val * mask - self.val_buf[t]
-            gae = delta + self.gamma * self.gae_lambda * mask * gae
-            advantages[t] = gae
-            returns[t] = advantages[t] + self.val_buf[t]
-            next_val = self.val_buf[t]
+        advantages, returns = compute_gae(
+            stack("reward"),
+            stack("value"),
+            stack("next_value"),
+            stack("terminated"),
+            stack("truncated"),
+            self.gamma,
+            self.gae_lambda,
+        )
+        adv = advantages.reshape(-1)
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        def tensor(x):
+            return torch.as_tensor(x, dtype=torch.float32, device=self.device)
 
-        obs_t = torch.as_tensor(np.array(self.obs_buf), dtype=torch.float32, device=self.device)
-        act_t = torch.as_tensor(np.array(self.act_buf), dtype=torch.float32, device=self.device)
-        old_logp_t = torch.as_tensor(self.logp_buf, dtype=torch.float32, device=self.device)
-        adv_t = torch.as_tensor(advantages, dtype=torch.float32, device=self.device)
-        ret_t = torch.as_tensor(returns, dtype=torch.float32, device=self.device)
-
-        total_loss = 0.0
-        num_batches = 0
-        indices = np.arange(n)
-
+        obs = tensor(stack("obs").reshape(-1, self.obs_dim))
+        act = tensor(stack("action").reshape(-1, self.act_dim))
+        old = tensor(stack("logp").reshape(-1))
+        advt = tensor(adv)
+        ret = tensor(returns.reshape(-1))
+        losses = []
+        kls = []
+        clips = []
+        entropies = []
+        stop = False
         for _ in range(epochs):
-            np.random.shuffle(indices)
-            for start in range(0, n, batch_size):
-                idx = indices[start : start + batch_size]
-                mean, val = self.net(obs_t[idx])
-                std = torch.exp(torch.clamp(self.net.log_std, -1.8, 0.2))
-                dist = Normal(mean, std)
-                logp = dist.log_prob(act_t[idx]).sum(dim=-1)
-                entropy = dist.entropy().sum(dim=-1).mean()
-
-                ratio = torch.exp(logp - old_logp_t[idx])
-                surr1 = ratio * adv_t[idx]
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * adv_t[idx]
-                policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = nn.functional.smooth_l1_loss(val.squeeze(-1), ret_t[idx])
-
-                loss = policy_loss + 0.5 * value_loss - 0.008 * entropy
+            for idx in np.array_split(
+                self.rng.permutation(len(obs)), max(1, math.ceil(len(obs) / batch_size))
+            ):
+                lp, value = self.net.evaluate(obs[idx], act[idx])
+                logratio = lp - old[idx]
+                ratio = logratio.exp()
+                policy = -torch.minimum(
+                    ratio * advt[idx], ratio.clamp(1 - self.clip_eps, 1 + self.clip_eps) * advt[idx]
+                ).mean()
+                vloss = 0.5 * (value - ret[idx]).square().mean()
+                # Monte Carlo entropy estimate on fresh actions, including tanh Jacobian.
+                dist, _ = self.net.distribution(obs[idx])
+                sample = dist.rsample().tanh().clamp(-1 + 1e-6, 1 - 1e-6)
+                entropy = -self.net.evaluate(obs[idx], sample)[0].mean()
+                loss = policy + 0.5 * vloss - 0.002 * entropy
+                with torch.no_grad():
+                    kl = ((ratio - 1) - logratio).mean().item()
+                if kl > 1.5 * self.target_kl:
+                    stop = True
+                    break
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(list(self.net.actor.parameters()) + [self.net.log_std], 0.5)
-                nn.utils.clip_grad_norm_(self.net.critic.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
                 self.optimizer.step()
-
-                total_loss += float(loss.item())
-                num_batches += 1
-
-        with torch.no_grad():
-            self.net.log_std.clamp_(-1.5, -0.20)
-
-        self.clear_buffer()
+                losses.append(loss.item())
+                kls.append(kl)
+                clips.append(((ratio - 1).abs() > self.clip_eps).float().mean().item())
+                entropies.append(entropy.item())
+            if stop:
+                break
+        variance = np.var(returns)
+        explained = 1 - np.var(returns - stack("value")) / variance if variance > 1e-8 else 0.0
+        self.last_loss = float(np.mean(losses)) if losses else 0.0
         self.updates_count += 1
-        self.last_loss = total_loss / max(1, num_batches)
+        self.metrics = dict(
+            loss=self.last_loss,
+            approx_kl=float(np.mean(kls)) if kls else 0.0,
+            clip_fraction=float(np.mean(clips)) if clips else 0.0,
+            entropy=float(np.mean(entropies)) if entropies else 0.0,
+            explained_variance=float(explained),
+            early_stop=stop,
+            transitions=len(obs),
+        )
+        self.buffer.clear()
         return self.last_loss
 
-    def save(self, path: str) -> None:
-        torch.save(
-            {
-                "model_state": self.net.state_dict(),
-                "total_steps": self.total_steps,
-                "updates_count": self.updates_count,
-            },
-            path,
+    def save(self, path, metadata=None):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = dict(
+            format_version=2,
+            observation_version=OBSERVATION_VERSION,
+            obs_dim=self.obs_dim,
+            act_dim=self.act_dim,
+            model_state=self.net.state_dict(),
+            optimizer_state=self.optimizer.state_dict(),
+            total_steps=self.total_steps,
+            environment_steps=self.environment_steps,
+            updates_count=self.updates_count,
+            hyperparameters=dict(
+                lr=self.lr,
+                gamma=self.gamma,
+                gae_lambda=self.gae_lambda,
+                clip_eps=self.clip_eps,
+                target_kl=self.target_kl,
+            ),
+            metadata=metadata or {},
         )
+        temp = path.with_suffix(path.suffix + ".tmp")
+        torch.save(data, temp)
+        temp.replace(path)
 
-    def load(self, path: str) -> None:
-        ckpt = torch.load(path, map_location=self.device)
+    def load(self, path, resume=False):
+        ckpt = torch.load(path, map_location=self.device, weights_only=True)
+        if ckpt.get("format_version") != 2 or ckpt.get("observation_version") != OBSERVATION_VERSION:
+            raise ValueError(
+                "Legacy/incompatible checkpoint. Train a v2 policy; the old 27D weights cannot be reused."
+            )
+        if ckpt["obs_dim"] != self.obs_dim or ckpt["act_dim"] != self.act_dim:
+            raise ValueError("Checkpoint dimensions differ")
         self.net.load_state_dict(ckpt["model_state"])
-        self.total_steps = ckpt.get("total_steps", 0)
-        self.updates_count = ckpt.get("updates_count", 0)
+        self.total_steps = ckpt["total_steps"]
+        self.environment_steps = ckpt["environment_steps"]
+        self.updates_count = ckpt["updates_count"]
+        if resume:
+            for key, val in ckpt["hyperparameters"].items():
+                setattr(self, key, val)
+            self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        self.buffer.clear()
+        return ckpt.get("metadata", {})

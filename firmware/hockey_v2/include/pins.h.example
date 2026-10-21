@@ -1,0 +1,4 @@
+// Copy to pins.h after checking the actual board schematic and H-bridge truth
+// table. Do not guess pin assignments; these are intentionally unset.
+#pragma once
+#error "Define verified LEFT_IN1, LEFT_IN2, RIGHT_IN1, RIGHT_IN2 pins for your board"

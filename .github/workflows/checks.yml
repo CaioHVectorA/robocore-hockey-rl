@@ -1,0 +1,38 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+      - run: python train.py --steps 32 --envs 2 --rollout 8 --episode-steps 30 --eval-episodes 1 --save /tmp/smoke.pt
+      - run: python main.py --frames 2 --screenshot /tmp/interface.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: interface-preview
+          path: /tmp/interface.png
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio
+      - name: Compile with test-only pins (never flash)
+        run: |
+          cp tests/fixtures/compile_pins.h firmware/hockey_v2/include/pins.h
+          pio run --project-dir firmware/hockey_v2
