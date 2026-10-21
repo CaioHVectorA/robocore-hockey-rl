@@ -8,11 +8,13 @@ Referência dos perfis Micro: [RoboCore Hockey Rules, revisão 15/01/2024](https
 | Cantos | Perfil segue a redação de diâmetro 24–30 cm; confirme o desenho do evento, pois a relação de escala no texto merece esclarecimento |
 | Gol | 52 cm de abertura e 18 cm de altura; profundidade de 12 cm é hipótese própria |
 | Disco | Diâmetro 3,17 cm e espessura 1,27 cm; massa de 15 g é estimativa a substituir por pesagem |
-| Chassi | Contorno 16 × 17 cm é proposta de projeto, dentro do envelope Micro; massa montada e inércia ainda não medidas |
-| Motores, pneus, patim | Curvas de velocidade, atraso, atritos e assimetria são estimativas |
+| Chassi | Referência comercial HockeyBot: aproximadamente 360 g publicados; envelope de 16,4 × 14,4 cm e bitola estimados pela foto |
+| Motores e pneus | Reposição indicada pelo fabricante: motor 6 V / 266 rpm e pneus NEO 60 × 20 mm; resposta real, atritos e assimetria ainda exigem medição |
 | Rádio e câmera | Frequências, atrasos e perdas são hipóteses configuráveis; exigem medição no equipamento |
 
 Uma regra define uma restrição; um parâmetro medido descreve um equipamento. Não use o limite de peso como comprovação de que o robô pesa exatamente esse valor. Confira ainda envolvimento e abertura da pá e se o formato de controle proposto é aceito pela organização.
+
+O hardware alvo é o [HockeyBot comercial](HOCKEYBOT_STOCK.md). A categoria comercial HockeyBot e a categoria Micro não devem ser presumidas equivalentes. O perfil Micro descreve uma arena escolhida para simulação; confirme o campo e as regras específicos da edição em que os robôs prontos serão usados.
 
 ## Protocolo de bancada
 

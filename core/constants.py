@@ -1,7 +1,7 @@
 """Versioned profiles. Units: centimetres, grams, seconds.
 
-Rules are limits. Robot/actuator parameters are uncalibrated design assumptions;
-see docs/COMPETITION_AND_CALIBRATION.md.
+Rules are limits. The stock robot combines manufacturer specifications with
+photo-derived geometry and uncalibrated dynamics; see docs/HOCKEYBOT_STOCK.md.
 """
 
 from dataclasses import asdict, dataclass
@@ -80,19 +80,37 @@ class ArenaConfig:
 
 @dataclass(frozen=True)
 class RobotConfig:
-    length: float = 16.0
-    width: float = 17.0
-    mass: float = 454.0
-    track: float = 14.5
-    axle_x: float = -2.5
+    model: str = "robocore-hockeybot-stock-photo-v1"
+    length: float = 16.4  # Assembled envelope, estimated from photographs.
+    width: float = 14.4
+    mass: float = 360.0  # Manufacturer's approximate assembled mass.
+    track: float = 11.8  # Tyre centre to tyre centre, photo estimate.
+    axle_x: float = -5.2
     skid_x: float = 6.8
-    max_wheel_speed: float = 85.0
+    skid_track: float = 11.4  # Equivalent floor contacts on the two front forks.
+    wheel_diameter: float = 6.0
+    wheel_width: float = 2.0
+    tire_mass: float = 13.0  # Each tyre only; hubs belong to residual mass.
+    motor_free_rpm: float = 266.0
+    motor_stall_torque_kgf_cm: float = 1.0
     motor_tau: float = 0.12
     tire_friction: float = 0.85
     skid_friction: float = 0.08
     deadband: float = 0.12
     inertia: float | None = None
-    provenance: str = "unmeasured design model, not certified HockeyBot specifications"
+    provenance: str = (
+        "RoboCore stock: published mass/tyres/motor; estimated photo geometry; uncalibrated dynamics"
+    )
+
+    @property
+    def max_wheel_speed(self):
+        """Theoretical no-load speed at 6 V, NOT measured speed on the floor."""
+        return math.pi * self.wheel_diameter * self.motor_free_rpm / 60
+
+    @property
+    def wheel_load_fraction(self):
+        """Static support estimate with the assumed mass centre at the origin."""
+        return self.skid_x / (self.skid_x - self.axle_x)
 
     def __post_init__(self):
         values = (
@@ -102,6 +120,12 @@ class RobotConfig:
             self.track,
             self.axle_x,
             self.skid_x,
+            self.skid_track,
+            self.wheel_diameter,
+            self.wheel_width,
+            self.tire_mass,
+            self.motor_free_rpm,
+            self.motor_stall_torque_kgf_cm,
             self.max_wheel_speed,
             self.motor_tau,
             self.tire_friction,
@@ -118,6 +142,26 @@ class RobotConfig:
             raise ValueError("Invalid drivetrain")
         if not 0 <= self.deadband < 1 or self.axle_x >= self.skid_x:
             raise ValueError("Invalid deadband/support points")
+        if (
+            min(
+                self.wheel_diameter,
+                self.wheel_width,
+                self.tire_mass,
+                self.motor_free_rpm,
+                self.motor_stall_torque_kgf_cm,
+            )
+            <= 0
+        ):
+            raise ValueError("Invalid wheel/motor specification")
+        if (
+            self.track + self.wheel_width > self.width
+            or abs(self.axle_x) + self.wheel_diameter / 2 > self.length / 2 + 1e-9
+        ):
+            raise ValueError("Wheels exceed assembled envelope")
+        if 2 * self.tire_mass >= self.mass or not self.axle_x < 0 < self.skid_x <= self.length / 2:
+            raise ValueError("Invalid mass distribution/support points")
+        if not 0 < self.skid_track < self.width:
+            raise ValueError("Invalid front support spacing")
 
 
 @dataclass(frozen=True)
@@ -181,8 +225,8 @@ class HockeyConstants:
     CORNER_RADIUS, GOAL_WIDTH, HALF_GOAL_WIDTH, GOAL_DEPTH = 12.5, 52.0, 26.0, 12.0
     ROBOTS_PER_TEAM = 3
     ROLE_STRIKER, ROLE_DEFENDER, ROLE_GOALIE = 0, 1, 2
-    ROBOT_LENGTH, ROBOT_WIDTH, ROBOT_MASS = 16.0, 17.0, 454.0
-    HALF_ROBOT_L, HALF_ROBOT_W = 8.0, 8.5
-    WHEELBASE, MAX_WHEEL_SPEED, GRAVITY = 14.5, 85.0, 981.0
+    ROBOT_LENGTH, ROBOT_WIDTH, ROBOT_MASS = 16.4, 14.4, 360.0
+    HALF_ROBOT_L, HALF_ROBOT_W = 8.2, 7.2
+    WHEELBASE, MAX_WHEEL_SPEED, GRAVITY = 11.8, RobotConfig().max_wheel_speed, 981.0
     PUCK_DIAMETER, PUCK_RADIUS, PUCK_SLIDING_FRICTION = 3.17, 1.585, 0.08
     DT, MATCH_TIME_SECONDS, BLE_CONTROL_RATE_HZ = 1 / 30, 300.0, 30.0

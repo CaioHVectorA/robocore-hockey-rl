@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+from dataclasses import asdict
 from collections import deque
 from copy import deepcopy
 import json
@@ -9,7 +10,7 @@ from pathlib import Path
 import time
 import numpy as np
 import torch
-from core.constants import PROFILES
+from core.constants import PROFILES, RobotConfig
 from rl.env import RoboCoreHockeyEnv, SCENARIOS
 from rl.ppo_trainer import HockeyPPOTrainer
 
@@ -76,6 +77,8 @@ def main():
         loaded_metadata = trainer.load(args.resume, resume=not args.eval_only)
         if loaded_metadata.get("configuration", {}).get("arena") != PROFILES[args.profile].to_dict():
             parser.error("Checkpoint and selected arena differ")
+        if loaded_metadata.get("configuration", {}).get("robot") != asdict(RobotConfig()):
+            parser.error("Checkpoint and current HockeyBot model differ; start a new training run")
     if args.eval_only:
         if not args.resume:
             parser.error("--eval-only requires --resume")

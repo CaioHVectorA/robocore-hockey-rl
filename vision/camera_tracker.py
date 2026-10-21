@@ -5,7 +5,8 @@ from collections import deque
 import math
 import cv2
 import numpy as np
-from core.constants import ArenaConfig, SimulationConfig
+from core.constants import ArenaConfig, RobotConfig, SimulationConfig
+from core.geometry import chassis_outline, wheel_footprints
 from vision.state import EntityState, WorldState, wrap_angle, build_team_observation
 
 
@@ -180,17 +181,38 @@ class SimulatedPartialVisionSensor:
 
 
 class HockeyVisionTracker:
-    def __init__(self, homography=None, robot_homography=None, camera_matrix=None, dist_coeffs=None):
+    def __init__(
+        self, homography=None, robot_homography=None, camera_matrix=None, dist_coeffs=None, robot_config=None
+    ):
         self.homography = homography or ArenaHomography()
         self.robot_homography = robot_homography or self.homography
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
+        self.robot_config = robot_config or RobotConfig()
+        self.robot_polygons = [
+            np.asarray(p, np.float32)
+            for p in [chassis_outline(robot=self.robot_config), *wheel_footprints(self.robot_config)]
+        ]
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         self.detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
         self.estimator = StateEstimator()
         self.state = WorldState(0.0)
         self.puck_hsv_lower = np.array([0, 0, 0])
         self.puck_hsv_upper = np.array([179, 255, 65])
+
+    def _on_robot(self, x, y, robots):
+        for r in robots.values():
+            c, s = math.cos(r["theta"]), math.sin(r["theta"])
+            dx, dy = x - r["x"], y - r["y"]
+            local = (dx * c + dy * s, -dx * s + dy * c)
+            # Allow shape/pose error at the concave lip. A circular exclusion
+            # zone would hide a real puck inside the stock front bay.
+            if any(
+                cv2.pointPolygonTest(poly, local, True) > -self.homography.arena.puck_radius * 0.5
+                for poly in self.robot_polygons
+            ):
+                return True
+        return False
 
     def detect_robots_and_puck(self, frame, timestamp=None):
         import time
@@ -248,8 +270,7 @@ class HockeyVisionTracker:
                 continue
             m = cv2.moments(cnt)
             x, y = self.homography.px_to_cm(m["m10"] / m["m00"], m["m01"] / m["m00"])
-            # Reject blobs on identified robot bodies; puck stays outside their centres.
-            if any(math.hypot(x - r["x"], y - r["y"]) < 6 for r in robots.values()):
+            if self._on_robot(x, y, robots):
                 continue
             dist = math.hypot(x - prior.x, y - prior.y)
             if prior.valid(timestamp) and dist > max(8.0, 350 * max(0.02, timestamp - prior.last_seen)):
@@ -269,5 +290,5 @@ class HockeyVisionTracker:
     ):
         state = self.state if now is None else self.estimator.snapshot(now)
         return build_team_observation(
-            state, self.homography.arena, team=team, previous_actions=previous_actions
+            state, self.homography.arena, self.robot_config, team=team, previous_actions=previous_actions
         )

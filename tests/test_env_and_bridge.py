@@ -5,7 +5,7 @@ import pytest
 from core.actuators import action_to_pwm, pwm_to_normalized
 from rl.env import RoboCoreHockeyEnv
 from bridge.vespa_ble_bridge import encode_command, decode_command, VespaBluetoothBridge, VespaTeamBridge
-from run_robot import tracking_ready
+from run_robot import tracking_ready, validate_transport
 
 
 def test_seed_reproduces_state_noise_and_trajectories():
@@ -145,3 +145,13 @@ def test_recording_mode_never_connects_to_radio(tmp_path, monkeypatch):
     records = [json.loads(line) for line in (tmp_path / "record.jsonl").read_text().splitlines()]
     assert records and all(not rec["tracking_ready"] for rec in records)
     assert all(np.array(rec["actions"]).sum() == 0 for rec in records)
+
+
+def test_original_bluetooth_is_never_mistaken_for_custom_adapter():
+    with pytest.raises(ValueError, match="Stock HockeyBot"):
+        validate_transport({"protocol_verified": True})
+    with pytest.raises(ValueError, match="Stock HockeyBot"):
+        validate_transport({"transport": "robocore-stock", "protocol_verified": True})
+    with pytest.raises(ValueError, match="Verify custom"):
+        validate_transport({"transport": "hockey-v2-custom"})
+    validate_transport({"transport": "hockey-v2-custom", "protocol_verified": True})

@@ -2,6 +2,8 @@
 
 Simulador 2D de hockey 3v3 com contatos de corpos rígidos, controle diferencial e uma arquitetura compartilhada entre percepção simulada e câmera real. O projeto é uma plataforma de desenvolvimento: parâmetros de hardware ainda precisam ser medidos e uma política precisa ser treinada e avaliada antes de uso nos robôs.
 
+O hardware de referência é o **HockeyBot pronto da RoboCore, controlado pelo aplicativo Bluetooth RoboCore Joystick**. Os três papéis usam o mesmo chassi, com recorte frontal curvo e rodas expostas na traseira. Massa aproximada de 360 g, pneus de 60 × 20 mm e dados do motor vêm do fabricante; dimensões do chassi e dinâmica ainda são estimadas. [Fontes, hipóteses e limites de fidelidade](docs/HOCKEYBOT_STOCK.md).
+
 ## Instalar e jogar
 
 Python 3.11 ou 3.12 recomendado:
@@ -27,6 +29,8 @@ python main.py --profile tabletop
 ```
 
 `micro-2024` escolhe 300 × 150 cm dentro da faixa Micro do regulamento RoboCore revisado em 15/01/2024; `micro-large` usa o extremo maior; `tabletop` preserva a mesa didática antiga. Confira revisão, categoria, desenho dos cantos e aceitação de autonomia/câmera com o evento específico. Os perfis distinguem fonte regulamentar de hipóteses de projeto; veja [competição e calibração](docs/COMPETITION_AND_CALIBRATION.md).
+
+A categoria comercial HockeyBot não foi presumida equivalente à Micro. A referência do robô e o perfil de arena são independentes; o perfil padrão não comprova as dimensões da arena de um evento HockeyBot.
 
 ## Treinar e avaliar
 
@@ -69,7 +73,7 @@ python run_robot.py --config configs/robot.local.json --policy checkpoints/hocke
 
 Esse comando é **dry-run**, sem conectar ao Bluetooth. Ele verifica a compatibilidade da arena/modelo do checkpoint com a configuração. Estados vencidos ou detecções ausentes bloqueiam a ação. O timestamp de recebimento do frame no computador não é o instante da exposição: meça `capture_delay_seconds` e valide a latência total.
 
-O protocolo BLE v2 deste projeto exige o [firmware próprio](firmware/hockey_v2). Não há alegação de compatibilidade com o firmware original do HockeyBot. Para armar o envio, configure endereços únicos, valide firmware/pinagem em bancada, marque `protocol_verified` e acrescente `--armed`. Não grave o firmware de exemplo sem confirmar a eletrônica. Veja [operação física](docs/ROBOTICS.md).
+O exemplo usa `transport: robocore-stock`. O protocolo Bluetooth original ainda não foi implementado: visão e dry-run funcionam, mas `--armed` é rejeitado. A ponte BLE v2 deste projeto exige um [adaptador com firmware próprio](firmware/hockey_v2) e eletrônica compatível. Para esse adaptador, selecione `transport: hockey-v2-custom`, configure endereços únicos, valide firmware/pinagem em bancada, marque `protocol_verified` e acrescente `--armed`. Não grave o firmware de exemplo sem confirmar a eletrônica. Veja [operação física](docs/ROBOTICS.md).
 
 ## Física e CAD
 
@@ -81,9 +85,10 @@ Frequências padrão: física 240 Hz, controle 30 Hz. Percepção simulada inclu
 
 ```bash
 python cad/fusion_chassis_generator.py
+python -m ui.robot_renderer --output runs/hockeybot-reference.png
 ```
 
-O CAD usa o mesmo contorno da física e do desenho; exporta bases de projeto, não uma montagem comercial certificada. [Detalhes mecânicos](docs/CHASSIS_CAD_PHYSICS_SPEC.md).
+O CAD usa o mesmo contorno da física e do desenho; exporta placas planas de referência estimadas por foto, não uma montagem comercial certificada. O segundo comando gera uma vista ampliada do robô. [Detalhes mecânicos](docs/CHASSIS_CAD_PHYSICS_SPEC.md). Pesos anteriores à revisão física do HockeyBot precisam de novo treinamento.
 
 ## Verificação
 

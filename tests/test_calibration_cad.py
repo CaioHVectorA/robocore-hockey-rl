@@ -28,3 +28,7 @@ def test_concave_plate_is_watertight_and_has_no_degenerate_triangles(role):
         for a, b in zip(face, face[1:] + face[:1]):
             edges[tuple(sorted([a, b]))] += 1
     assert set(edges.values()) == {2}
+
+
+def test_cad_does_not_invent_different_stock_bodies_for_tactical_roles():
+    assert build_3d_mesh_for_role(0) == build_3d_mesh_for_role(1) == build_3d_mesh_for_role(2)

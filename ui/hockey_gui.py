@@ -12,7 +12,7 @@ import pygame
 import numpy as np
 import torch
 from core.constants import PROFILES
-from core.geometry import chassis_outline
+from ui.robot_renderer import draw_robot
 from bots.hockey_bot import HeuristicHockeyBot
 from rl.env import RoboCoreHockeyEnv
 from rl.ppo_trainer import HockeyPPOTrainer
@@ -63,11 +63,12 @@ def run_hockey_gui(profile="micro-2024", policy=None, screenshot=None, max_frame
             loaded = (
                 trainer.updates_count > 0
                 and meta.get("configuration", {}).get("arena") == env.arena.to_dict()
+                and meta.get("configuration", {}).get("robot") == env.configuration()["robot"]
             )
             status = (
                 f"Política disponível · {trainer.updates_count} atualizações"
                 if loaded
-                else "Checkpoint sem treino ou de outro perfil"
+                else "Checkpoint sem treino ou de outro modelo físico"
             )
         except (ValueError, RuntimeError) as exc:
             status = str(exc)
@@ -101,6 +102,8 @@ def run_hockey_gui(profile="micro-2024", policy=None, screenshot=None, max_frame
                 raise ValueError("Este checkpoint ainda não teve atualizações")
             if meta.get("configuration", {}).get("arena") != env.arena.to_dict():
                 raise ValueError("O checkpoint usa outra arena")
+            if meta.get("configuration", {}).get("robot") != env.configuration()["robot"]:
+                raise ValueError("O checkpoint usa outro modelo de robô; treine com o HockeyBot atual")
             loaded = True
             mode = "Política PPO"
             status = f"PPO · {trainer.updates_count} atualizações"
@@ -366,19 +369,8 @@ def run_hockey_gui(profile="micro-2024", policy=None, screenshot=None, max_frame
                 else [(r.x, r.y, r.theta, r.team, r.role_id) for r in env.engine.all_robots]
             )
             for x, y, theta, team, role in robots:
-                outline = chassis_outline(role, env.engine.robot_config)
-                c, s = math.cos(theta), math.sin(theta)
-                pts = [world(x + lx * c - ly * s, y + lx * s + ly * c) for lx, ly in outline]
-                shadow = [(px + 2, py + 3) for px, py in pts]
-                pygame.draw.polygon(screen, (156, 177, 185), shadow)
-                pygame.draw.polygon(screen, BLUE if team == 0 else RED, pts)
-                pygame.draw.polygon(screen, (17, 40, 62), pts, 2)
+                draw_robot(screen, world, x, y, theta, BLUE if team == 0 else RED, env.engine.robot_config)
                 center = world(x, y)
-                for side in [-1, 1]:
-                    px, py = world(x - 2.5 * c - side * 7.25 * s, y - 2.5 * s + side * 7.25 * c)
-                    pygame.draw.circle(screen, (25, 35, 44), (px, py), max(2, round(1.8 * scale)))
-                front = world(x + 6 * c, y + 6 * s)
-                pygame.draw.line(screen, (255, 242, 197), center, front, 3)
                 label = fonts[12].render(str(team * 3 + role), True, (255, 255, 255))
                 screen.blit(label, label.get_rect(center=center))
                 if team == 0 and role == selected:

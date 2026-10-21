@@ -80,6 +80,22 @@ def test_real_aruco_id_and_heading_convention():
     assert 0 in robots and abs(robots[0].theta - math.pi / 2) < 0.03
 
 
+@pytest.mark.parametrize("pixel,visible", [((600, 275), True), ((574, 300), False), ((576, 328), False)])
+def test_stock_bay_remains_visible_but_cover_and_tyres_cannot_be_puck(pixel, visible):
+    h = homography()
+    tracker = HockeyVisionTracker(h)
+    frame = np.full((600, 1200, 3), 240, np.uint8)
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    tag = cv2.aruco.generateImageMarker(dictionary, 0, 32)
+    frame[284:316, 584:616] = cv2.cvtColor(tag, cv2.COLOR_GRAY2BGR)
+    cv2.circle(frame, pixel, 6, (0, 0, 0), -1)
+    robots, puck = tracker.detect_robots_and_puck(frame, 0)
+    assert 0 in robots
+    assert puck.valid(0) == visible
+    if visible:
+        np.testing.assert_allclose([puck.x, puck.y], h.px_to_cm(*pixel), atol=0.3)
+
+
 def test_simulated_latency_is_applied():
     cfg = SimulationConfig(vision_latency=0.1, vision_noise=0, vision_dropout=0)
     env = RoboCoreHockeyEnv(simulation=cfg, domain_randomization=False)

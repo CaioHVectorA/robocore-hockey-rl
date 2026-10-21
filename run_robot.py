@@ -54,8 +54,21 @@ class LatestCamera:
         self.thread.join(timeout=1.0)
 
 
+def validate_transport(cfg):
+    """The stock Joystick protocol has not been implemented or verified here."""
+    if cfg.get("transport", "robocore-stock") != "hockey-v2-custom":
+        raise ValueError(
+            "Stock HockeyBot Bluetooth/app protocol is not implemented. "
+            "Camera recording and dry-run work without it. hockey-v2-custom requires a separate verified adapter."
+        )
+    if not cfg.get("protocol_verified", False):
+        raise ValueError("Verify custom HOCKEY-V2 firmware, electronics and pin mapping in bench tests first")
+
+
 async def run(args):
     cfg = json.loads(Path(args.config).read_text())
+    if args.armed:
+        validate_transport(cfg)
     arena = ArenaConfig(**cfg["arena"]) if "arena" in cfg else PROFILES[cfg.get("profile", "micro-2024")]
     robot = RobotConfig(**cfg.get("robot", {}))
     h = ArenaHomography(cfg["floor_corners_px"], arena)
@@ -65,7 +78,25 @@ async def run(args):
         rh,
         np.array(cfg["camera_matrix"]) if "camera_matrix" in cfg else None,
         np.array(cfg["dist_coeffs"]) if "dist_coeffs" in cfg else None,
+        robot_config=robot,
     )
+    lower = np.asarray(cfg.get("puck_hsv_lower", [0, 0, 0]))
+    upper = np.asarray(cfg.get("puck_hsv_upper", [179, 255, 65]))
+    limits = np.array([179, 255, 255])
+    if (
+        lower.shape != (3,)
+        or upper.shape != (3,)
+        or not np.all(np.isfinite(lower))
+        or not np.all(np.isfinite(upper))
+        or np.any(lower < 0)
+        or np.any(upper > limits)
+        or np.any(lower > upper)
+        or np.any(lower != np.floor(lower))
+        or np.any(upper != np.floor(upper))
+    ):
+        raise ValueError("Invalid puck HSV range: OpenCV uses H 0..179, S/V 0..255")
+    tracker.puck_hsv_lower = lower.astype(np.uint8)
+    tracker.puck_hsv_upper = upper.astype(np.uint8)
     team = int(cfg.get("team", 0))
     if team not in (0, 1):
         raise ValueError("team must be 0 or 1")
@@ -97,8 +128,6 @@ async def run(args):
     )
     try:
         if args.armed:
-            if not cfg.get("protocol_verified", False):
-                raise ValueError("Verify HOCKEY-V2 firmware and pin mapping in bench tests first")
             bridge = VespaTeamBridge(cfg["ble_addresses"])
             await bridge.connect_all()
         with log_path.open("w", encoding="utf8") as log:

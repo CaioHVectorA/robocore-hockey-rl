@@ -1,6 +1,6 @@
 """Fusion 360 script: import the shared outline and extrude a 3 mm design plate.
 
-Does not create motors, holes, electronics or a validated 454 g assembly.
+Photo reference only. Does not create motors, holes or a validated assembly.
 Run the generator first. Fusion internal length units are centimetres.
 """
 import json

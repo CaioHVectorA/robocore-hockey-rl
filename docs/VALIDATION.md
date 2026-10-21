@@ -1,4 +1,24 @@
-# Validação da revisão v2
+# Validação
+
+## Referência comercial HockeyBot — revisão atual
+
+Em 21/10/2026, a geometria foi substituída pela referência comercial `robocore-hockeybot-stock-photo-v1`. Os dados publicados e as hipóteses estão em [HOCKEYBOT_STOCK.md](HOCKEYBOT_STOCK.md). O contorno foi reconstruído pela foto do fabricante; não houve medição do chassi físico.
+
+- **57 testes aprovados.** A suíte foi ampliada para verificar chassis/CAD idênticos entre papéis, envelope incluindo pneus, abertura real do recorte, impactos nos pneus, colocação sem penetração profunda e contatos rasos na cavidade.
+- Imagens sintéticas verificam que o disco continua detectável na abertura frontal, enquanto manchas sobre a tampa ou os pneus são rejeitadas. Os testes existentes de tracking sim/real continuam aplicáveis.
+- Checkpoints de outro modelo físico são rejeitados; o transporte comercial original é distinguido do adaptador próprio. Nenhuma chamada de teste acionou Bluetooth real.
+- Interface e vista ampliada renderizadas com SDL dummy. CAD OBJ/STL regenerado a partir do mesmo contorno, com integridade das malhas verificada nos testes.
+- Ruff, compilação dos módulos e `git diff --check` aprovados. A CLI rejeitou o checkpoint da revisão anterior por incompatibilidade de modelo físico, como esperado.
+
+Passagem de treino com o novo corpo:
+
+```bash
+python train.py --steps 1024 --envs 2 --rollout 64 --episode-steps 180 --eval-episodes 1
+```
+
+Completou 1.024 transições de ambiente, 3.072 amostras individuais e oito atualizações em aproximadamente 5,7 s neste executor. KL final 0,00214, clipping 0,0234, métricas finitas. A única avaliação reservada terminou por tempo, sem gol azul; isso verifica funcionamento e **não demonstra uma política competente**. Os resultados de 20.000 passos abaixo pertencem ao corpo anterior e não devem ser atribuídos ao HockeyBot desta revisão.
+
+## Histórico: revisão v2 com o corpo anterior
 
 Executada em 21/10/2026 sobre a revisão proposta. Plataforma Linux, Python 3.12.14, PyTorch 2.14.1 CPU, NumPy 2.3.5, OpenCV 5.0.0.93, pygame 2.6.1, Gymnasium 1.4.0 e Pymunk 7.x.
 

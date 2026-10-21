@@ -74,3 +74,16 @@ def test_checkpoint_schema_and_resume(tmp_path):
     torch.save({"model_state": {}, "updates_count": 0}, path)
     with pytest.raises(ValueError, match="Legacy"):
         restored.load(path)
+
+
+@pytest.mark.parametrize("change", [{"mass": 454.0}, {"model": "previous-invented-chassis"}])
+def test_evaluation_rejects_weights_trained_with_different_robot_physics(tmp_path, change):
+    from evaluate import benchmark
+    from rl.env import RoboCoreHockeyEnv
+
+    cfg = RoboCoreHockeyEnv().configuration()
+    cfg["robot"].update(change)
+    path = tmp_path / "previous.pt"
+    HockeyPPOTrainer().save(path, {"configuration": cfg})
+    with pytest.raises(ValueError, match="HockeyBot model mismatch"):
+        benchmark(episodes=1, policy=path, max_steps=1)

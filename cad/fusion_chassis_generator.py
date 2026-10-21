@@ -1,4 +1,4 @@
-"""Export the shared design outline as watertight OBJ/STL base plates.
+"""Export the photo-derived stock outline as watertight OBJ/STL base plates.
 
 This is a design aid, not a reverse-engineered/certified HockeyBot assembly.
 STL is unitless: import using centimetres. Plate thickness is 3 mm.
@@ -10,8 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
-import pymunk
-from core.geometry import chassis_outline, convex_chassis_parts
+from core.geometry import chassis_outline, wheel_footprints, estimated_inertia
 from core.constants import RobotConfig
 
 
@@ -90,19 +89,18 @@ def main():
         vertices, faces = build_3d_mesh_for_role(role, cfg)
         export_obj(directory / f"chassis_{name}.obj", vertices, faces, name)
         export_stl_ascii(directory / f"chassis_{name}.stl", vertices, faces, name)
-        parts = convex_chassis_parts(role, cfg)
-        areas = [pymunk.area_for_poly(p) for p in parts]
-        inertia = sum(pymunk.moment_for_poly(cfg.mass * a / sum(areas), p) for a, p in zip(areas, parts))
         specs[name] = dict(
+            model=cfg.model,
             outline_cm=chassis_outline(role, cfg),
+            tyre_footprints_cm=wheel_footprints(cfg),
             plate_thickness_cm=0.3,
             assumed_assembled_mass_g=cfg.mass,
-            estimated_assembled_inertia_g_cm2=inertia,
+            estimated_assembled_inertia_g_cm2=estimated_inertia(cfg),
             provenance=cfg.provenance,
-            notes="Mass is assembled robot model, NOT plate mass or a measured BOM",
+            notes="Same stock body for every role. Photo-derived flat plate; thickness assumed. Not fabrication CAD.",
         )
     (directory / "chassis_specs.json").write_text(json.dumps(specs, indent=2) + "\n", encoding="utf8")
-    print("Exported three design plates from the same outline used by physics and UI.")
+    print("Exported identical stock-reference plates for all roles; photo estimates, not fabrication CAD.")
 
 
 if __name__ == "__main__":

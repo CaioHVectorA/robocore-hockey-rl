@@ -4,11 +4,15 @@ Monte uma câmera fixa que veja todo o campo, seis IDs e o disco. Evite exposiç
 
 O JSON de câmera informa o perfil, pontos de calibração TL/TR/BR/BL e atraso de captura medido. Opcionalmente informe `camera_matrix`, `dist_coeffs` e `robot_corners_px` para calibrar o plano elevado das tags. Os pontos de homografia devem vir da imagem sem distorção. Não use os cantos arredondados como se fossem os vértices retangulares: use pontos de referência mensuráveis que representem o retângulo métrico.
 
+Configure `puck_hsv_lower` / `puck_hsv_upper` para a cor do seu disco (OpenCV: H 0–179, S/V 0–255). O exemplo detecta um disco escuro; o mini puck de fábrica pode ser colorido e não foi medido como disco Micro. Ajuste também diâmetro e massa em `arena`, mantendo a mesma configuração no treino. Valide a detecção no recorte frontal e em contato com robôs da mesma cor: HSV e circularidade podem perder a separação nessas condições.
+
 O estimador é comum à câmera e às detecções simuladas. Estados têm último timestamp observado, velocidade e validade; após 250 ms não alimentam o ator como posição válida. O supervisor é mais conservador: os três robôs próprios e o disco devem estar visíveis/recentes em até 150 ms para permitir movimento. Os adversários podem ser temporariamente desconhecidos, com confiança zero na observação.
 
 `run_robot.py` usa um thread de captura com slot do frame mais recente, percepção/inferência e controle a 30 Hz. O log registra validade e comandos. `cap.read()` oferece timestamp no host; subtraia `capture_delay_seconds` medido. Dry-run não conecta ao rádio. O runner rejeita configuração física diferente da usada no treinamento.
 
 ## Firmware e protocolo
+
+O hardware alvo é o HockeyBot pronto comandado pelo RoboCore Joystick. O protocolo Bluetooth original ainda não foi implementado/verificado. O exemplo seleciona `transport: robocore-stock`: gravação, visão e inferência dry-run funcionam; `--armed` falha antes de abrir câmera ou rádio. A [referência do produto](HOCKEYBOT_STOCK.md) distingue especificações conhecidas de parâmetros estimados.
 
 Para coletar dados antes de ter pesos treinados, execute `run_robot.py --config ... --track-only --preview`. O JSONL registra poses e velocidades estimadas; os dados brutos da calibração continuam necessários. Esse modo não aceita `--armed`.
 
@@ -34,6 +38,6 @@ Comandos antigos e CRC inválido não renovam a validade. O microcontrolador zer
 
 ## Sequência de validação
 
-Primeiro teste firmware com rodas suspensas, comandos conhecidos e parada por desconexão/TTL. Depois valide IDs, endereços e sentido das rodas, com velocidade limitada e espaço livre. Compare o tracking com posições medidas. Use dry-run com uma política congelada e inspecione logs. Somente depois habilite `protocol_verified` e `--armed`.
+Para o adaptador próprio: primeiro teste firmware com rodas suspensas, comandos conhecidos e parada por desconexão/TTL. Depois valide IDs, endereços e sentido das rodas, com velocidade limitada e espaço livre. Compare o tracking com posições medidas. Use dry-run com uma política congelada e inspecione logs. Somente depois selecione `transport: hockey-v2-custom`, habilite `protocol_verified` e `--armed`. Isso não torna o firmware original compatível.
 
 Não houve validação deste firmware no seu robô, do rádio ou da óptica nesta alteração. A identificação mecânica e o ensaio da parada física continuam necessários.

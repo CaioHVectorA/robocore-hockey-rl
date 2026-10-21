@@ -1,11 +1,12 @@
 """Evaluate frozen controllers on identical reserved initial seeds."""
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import numpy as np
 import torch
-from core.constants import PROFILES
+from core.constants import PROFILES, RobotConfig
 from bots.hockey_bot import HeuristicHockeyBot
 from rl.env import RoboCoreHockeyEnv, SCENARIOS
 from rl.ppo_trainer import HockeyPPOTrainer
@@ -20,6 +21,8 @@ def benchmark(episodes=10, seed=10000, profile="micro-2024", policy=None, max_st
         meta = trainer.load(policy)
         if meta.get("configuration", {}).get("arena") != PROFILES[profile].to_dict():
             raise ValueError("Policy/profile mismatch")
+        if meta.get("configuration", {}).get("robot") != asdict(RobotConfig()):
+            raise ValueError("Policy/current HockeyBot model mismatch")
         controllers.append("ppo")
     result = dict(profile=profile, seed=seed, scenario=scenario, max_steps=max_steps, controllers={})
     for name in controllers:

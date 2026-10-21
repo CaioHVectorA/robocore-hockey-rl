@@ -9,7 +9,13 @@ import math
 import numpy as np
 import pymunk
 from core.constants import ArenaConfig, RobotConfig, SimulationConfig
-from core.geometry import convex_chassis_parts
+from core.geometry import (
+    chassis_outline,
+    wheel_footprints,
+    collision_parts,
+    estimated_inertia,
+    footprint_vertices,
+)
 from core.actuators import action_to_pwm, pwm_to_normalized
 
 
@@ -190,12 +196,8 @@ class HockeyPhysicsEngine:
         for team, collection in [(0, self.blue_robots), (1, self.red_robots)]:
             sign = 1 if team == 0 else -1
             for role in range(self.robots_per_team):
-                parts = convex_chassis_parts(role, cfg)
-                areas = np.array([pymunk.area_for_poly(p) for p in parts])
-                moment = sum(
-                    pymunk.moment_for_poly(cfg.mass * a / areas.sum(), p) for a, p in zip(areas, parts)
-                )
-                body = pymunk.Body(cfg.mass, cfg.inertia or moment)
+                parts = collision_parts(cfg)
+                body = pymunk.Body(cfg.mass, cfg.inertia or estimated_inertia(cfg))
                 x = (-self.arena.length * 0.22, -self.arena.length * 0.32, -self.arena.half_length + 18)[
                     role
                 ] * sign
@@ -267,12 +269,14 @@ class HockeyPhysicsEngine:
         actual = pwm_to_normalized(action_to_pwm(r.command, c.deadband), r.deadband)
         target = actual * c.max_wheel_speed * np.array([r.motor_gain_l, r.motor_gain_r])
         r.wheel_target += (target - r.wheel_target) * (-math.expm1(-dt / c.motor_tau))
-        grip = c.tire_friction * c.mass * 981 * 0.75 / 2
+        grip = c.tire_friction * c.mass * 981 * c.wheel_load_fraction / 2
+        # DC torque-speed approximation at rated voltage. kgf.cm -> g.cm²/s².
+        stall_force = c.motor_stall_torque_kgf_cm * 1000 * 981 / (c.wheel_diameter / 2)
         r.is_slipping = False
         for i, side in enumerate([1, -1]):
             point = (c.axle_x, side * c.track / 2)
             v = b.velocity_at_local_point(point).rotated(-b.angle)
-            fx = (r.wheel_target[i] - v.x) * c.mass / (2 * c.motor_tau)
+            fx = stall_force * np.clip((r.wheel_target[i] - v.x) / c.max_wheel_speed, -1, 1)
             fy = -v.y * c.mass / (2 * max(0.04, c.motor_tau))
             mag = math.hypot(fx, fy)
             if mag > grip:
@@ -280,11 +284,16 @@ class HockeyPhysicsEngine:
                 fy *= grip / mag
                 r.is_slipping = True
             b.apply_force_at_local_point((fx, fy), point)
-        v = b.velocity_at_local_point((c.skid_x, 0)).rotated(-b.angle)
-        speed = v.length
-        if speed > 1e-5:
-            drag = min(c.skid_friction * c.mass * 981 * 0.25, c.mass * speed / dt * 0.1)
-            b.apply_force_at_local_point(tuple(-v * drag / speed), (c.skid_x, 0))
+        for side in (-1, 1):
+            support = (c.skid_x, side * c.skid_track / 2)
+            v = b.velocity_at_local_point(support).rotated(-b.angle)
+            speed = v.length
+            if speed > 1e-5:
+                drag = min(
+                    c.skid_friction * c.mass * 981 * (1 - c.wheel_load_fraction) / 2,
+                    c.mass * speed / dt * 0.05,
+                )
+                b.apply_force_at_local_point(tuple(-v * drag / speed), support)
 
     def _resolve_arena_boundaries(self):
         a = self.arena
@@ -343,7 +352,8 @@ class HockeyPhysicsEngine:
             local = r.body.world_to_local(self.puck.body.position)
             c = r.config
             r.has_puck_in_scoop = (
-                c.length / 2 - 2 < local.x < c.length / 2 + self.arena.puck_radius + 1 and abs(local.y) < 3
+                c.length * 0.28 + self.arena.puck_radius < local.x < c.length / 2 + self.arena.puck_radius
+                and abs(local.y) < c.width * 0.22
             )
         self.steps += 1
         self.puck.trail.append((self.puck.x, self.puck.y))
@@ -364,10 +374,8 @@ class HockeyPhysicsEngine:
     def place_robot(self, robot, x, y, theta=None):
         # Keep bench placement on the legal side of wall segments. Deep initial
         # segment penetration has ambiguous normals in a contact solver.
-        from core.geometry import chassis_outline
-
         angle = robot.theta if theta is None else theta
-        vertices = [pymunk.Vec2d(*p).rotated(angle) for p in chassis_outline(robot.role_id, robot.config)]
+        vertices = [pymunk.Vec2d(*p).rotated(angle) for p in footprint_vertices(robot.config)]
         a = self.arena
         x = float(
             np.clip(
@@ -404,8 +412,40 @@ class HockeyPhysicsEngine:
         robot.wheel_target[:] = 0
         robot.command[:] = 0
         self.space.reindex_shapes_for_body(robot.body)
+        self.place_puck(self.puck.x, self.puck.y, self.puck.vx, self.puck.vy)
 
     def place_puck(self, x, y, vx=0.0, vy=0.0):
-        self.puck.body.position = (x, y)
+        requested = pymunk.Vec2d(x, y)
+        radius = self.arena.puck_radius
+        solids = [s for s in self.space.shapes if s.collision_type == 2]
+
+        def clear(point):
+            return all(s.point_query(point).distance >= radius - 1e-7 for s in solids)
+
+        position = requested
+        if not clear(requested):
+            # Bench/reset operation only: deep initial penetration across a
+            # concave body's internal seams is ambiguous for a contact solver.
+            # Find free placement using EXTERNAL edges, never apply an in-game
+            # ejection force or attach the puck to a robot.
+            candidates = []
+            for r in self.all_robots:
+                polygons = [chassis_outline(robot=r.config), *wheel_footprints(r.config)]
+                for polygon in polygons:
+                    points = [r.body.local_to_world(p) for p in polygon]
+                    for a, b in zip(points, points[1:] + points[:1]):
+                        edge = b - a
+                        t = float(np.clip((requested - a).dot(edge) / edge.length_squared, 0, 1))
+                        normal = pymunk.Vec2d(edge.y, -edge.x).normalized()
+                        candidates.append(a + edge * t + normal * (radius + 0.03))
+                        for angle in np.linspace(0, 2 * math.pi, 16, endpoint=False):
+                            candidates.append(
+                                a + pymunk.Vec2d(math.cos(angle), math.sin(angle)) * (radius + 0.03)
+                            )
+            candidates.sort(key=lambda p: (p - requested).length_squared)
+            position = next((p for p in candidates if clear(p)), None)
+            if position is None:
+                raise ValueError("No free puck placement around the selected robot assembly")
+        self.puck.body.position = position
         self.puck.body.velocity = (vx, vy)
         self.space.reindex_shapes_for_body(self.puck.body)
