@@ -19,13 +19,16 @@ jobs:
       - run: ruff check . && ruff format --check .
       - run: pytest -q
       - run: python train.py --steps 32 --envs 2 --rollout 8 --episode-steps 30 --eval-episodes 1 --save /tmp/smoke.pt
+      - run: python train.py --config configs/training/solo_goal.json --steps 32 --envs 2 --rollout 8 --episode-steps 30 --eval-episodes 1 --save /tmp/solo.pt
       - run: python main.py --frames 2 --screenshot /tmp/interface.png
+      - run: python main.py --preset solo_goal --frames 2 --screenshot /tmp/solo-interface.png
       - run: python -m ui.robot_renderer --output /tmp/hockeybot-reference.png
       - uses: actions/upload-artifact@v4
         with:
           name: interface-preview
           path: |
             /tmp/interface.png
+            /tmp/solo-interface.png
             /tmp/hockeybot-reference.png
   firmware:
     runs-on: ubuntu-latest

@@ -16,9 +16,13 @@ pip install -r requirements.txt
 python main.py
 ```
 
-A interface abre com dois bots táticos. **1** demonstração; **2** bancada manual; **3** política PPO; **P** pausa; **R** nova partida; **V** rastreamento; **Tab/clique** seleciona robô azul. WASD/setas controlam o robô selecionado; espaço gira. Com a partida pausada, arraste entidades para montar ensaios. Botão direito + puxar aplica impulso no disco. **[ / ]** percorrem o histórico disponível para replay.
+A interface abre na **bancada de treino**, com o padrão **3v3 self-play**. Escolha um exercício, ajuste os campos e clique **Iniciar treino**. O campo mostra o primeiro ambiente que está realmente gerando experiências do PPO. Há pausa, ritmo 1×/5×/máximo, encerramento com salvamento, gráficos e histórico de sessões.
 
-O treino da interface roda em outro processo e salva em `checkpoints/hockey_v2.pt`; use “Carregar pesos” para avaliar. Não existe uma política competente pré-instalada. O antigo `hockey_ppo.pt` é incompatível e não é carregado automaticamente.
+Para treinar um robô sozinho a buscar o disco e levar ao gol, selecione **Solo · buscar e marcar**. **Solo · ir ao disco** ensina a aproximação; finalização e defesa também têm presets. Quantidade de robôs, cenário, duração, seed, recompensas e parâmetros do PPO são editáveis. Os adversários do treino solo não existem na física. Veja o [guia da bancada](docs/TRAINING_WORKBENCH.md).
+
+**Ver treino ao vivo** acompanha a coleta exploratória. **Avaliar últimos pesos** abre uma simulação independente com pesos congelados. **Pré-visualizar exercício** usa o bot tático e é identificado como prévia. A aba **Simular** preserva controle manual, pausa, arraste, impulso, tracking e replay. **1/2/3** alternam controlador; **P** pausa; **V** tracking; **Tab** seleciona; WASD/setas e espaço controlam o robô na bancada manual.
+
+Cada treino salva configuração, pesos, métricas e logs em `runs/experiments/`. A aba **Sessões** permite avaliar, retomar ou transferir pesos entre exercícios. Não existe uma política competente pré-instalada. O antigo `hockey_ppo.pt` é incompatível e não é carregado automaticamente.
 
 ## Perfis de arena
 
@@ -35,13 +39,14 @@ A categoria comercial HockeyBot não foi presumida equivalente à Micro. A refer
 ## Treinar e avaliar
 
 ```bash
-python train.py --steps 100000 --envs 4 --seed 42
-python train.py --steps 500000 --resume checkpoints/hockey_v2.pt
-python train.py --eval-only --resume checkpoints/hockey_v2.best.pt --eval-episodes 30
-python evaluate.py --episodes 10 --output runs/benchmark.json
+python main.py --preset solo_goal
+python train.py --config configs/training/selfplay.json --steps 100000
+python train.py --config configs/training/solo_goal.json --steps 100000
+python train.py --config runs/experiments/SESSAO/config.json --resume runs/experiments/SESSAO/latest.pt
+python evaluate.py --policy runs/experiments/SESSAO/latest.pt --episodes 20
 ```
 
-O currículo usa finalização, defesa, posições variadas e face-off. `--scenario faceoff` mantém um cenário; `--profile`, `--rollout`, `--episode-steps`, `--save` e `--log` são configuráveis. Os passos informados são transições de ambiente; cada uma gera três amostras de agente. O histórico JSONL inclui KL, fração de clipping, entropia, variância explicada e avaliações em seeds reservadas.
+O currículo opcional usa finalização, defesa, posições variadas e face-off. Os passos são transições de ambiente; cada uma gera uma amostra por robô azul. A interface mostra retorno e sucesso da coleta; o histórico inclui KL, clipping, entropia, variância explicada e avaliações em seeds reservadas. As avaliações preservam o exercício e a quantidade de robôs. Transferência carrega a rede em um novo otimizador; retomada exige compatibilidade do experimento.
 
 O PPO usa ações Normal→tanh com probabilidades consistentes e GAE separado por ambiente/robô. Truncamentos fazem bootstrap; términos e resets interrompem a recursão. Checkpoints v2 incluem versão da observação, parâmetros, estado do otimizador e configuração física. A carga de um checkpoint incompatível falha explicitamente.
 
@@ -77,7 +82,7 @@ O exemplo usa `transport: robocore-stock`. O protocolo Bluetooth original ainda 
 
 ## Física e CAD
 
-O treino padrão `--opponent mixed` varia a dificuldade do bot, inclui alguns episódios contra ações zero e incorpora versões anteriores da política. Use `--opponent selfplay` para priorizar versões anteriores depois que o primeiro snapshot existir, ou `--opponent heuristic` para manter o bot como adversário. Os snapshots são congelados e a troca de adversário ocorre entre episódios.
+O treino padrão `--opponent selfplay` usa versões congeladas da própria política desde o primeiro episódio, com exploração nos dois times. `--opponent mixed` varia bot, adversários parados e snapshots; `--opponent heuristic` mantém o bot tático. A troca de adversário ocorre entre episódios. No solo, o controlador é `none` e não há robôs vermelhos.
 
 Pymunk resolve contatos entre polígonos, disco, traves e paredes. Motores aplicam forças nas rodas; arrasto do patim e atrito de deslizamento são parametrizados. O disco é solto: condução e chutes emergem dos contatos. Gol exige passagem completa entre as traves. A interface conserva tempo e placar entre gols, com partida de cinco minutos e morte súbita em empate.
 

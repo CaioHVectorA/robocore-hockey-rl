@@ -91,6 +91,7 @@ class HockeyPPOTrainer:
         device="cpu",
         seed=0,
         target_kl=0.02,
+        entropy_coef=0.002,
     ):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -99,6 +100,7 @@ class HockeyPPOTrainer:
         self.gae_lambda = gae_lambda
         self.clip_eps = clip_eps
         self.target_kl = target_kl
+        self.entropy_coef = entropy_coef
         self.device = torch.device(device)
         self.rng = np.random.default_rng(seed)
         self.net = HockeyPolicyNet(obs_dim, act_dim).to(self.device)
@@ -215,7 +217,7 @@ class HockeyPPOTrainer:
                 dist, _ = self.net.distribution(obs[idx])
                 sample = dist.rsample().tanh().clamp(-1 + 1e-6, 1 - 1e-6)
                 entropy = -self.net.evaluate(obs[idx], sample)[0].mean()
-                loss = policy + 0.5 * vloss - 0.002 * entropy
+                loss = policy + 0.5 * vloss - self.entropy_coef * entropy
                 with torch.no_grad():
                     kl = ((ratio - 1) - logratio).mean().item()
                 if kl > 1.5 * self.target_kl:
@@ -266,6 +268,7 @@ class HockeyPPOTrainer:
                 gae_lambda=self.gae_lambda,
                 clip_eps=self.clip_eps,
                 target_kl=self.target_kl,
+                entropy_coef=self.entropy_coef,
             ),
             metadata=metadata or {},
         )
