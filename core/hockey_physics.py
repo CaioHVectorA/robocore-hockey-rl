@@ -148,6 +148,7 @@ class HockeyPhysicsEngine:
         robot_config=None,
         simulation=None,
         seed=None,
+        opponent_robots=None,
     ):
         if not 1 <= robots_per_team <= 3:
             raise ValueError("Use one to three robots per team")
@@ -155,6 +156,9 @@ class HockeyPhysicsEngine:
         self.robot_config = robot_config or RobotConfig()
         self.simulation = simulation or SimulationConfig()
         self.robots_per_team = robots_per_team
+        self.opponent_robots = robots_per_team if opponent_robots is None else opponent_robots
+        if not isinstance(self.opponent_robots, int) or not 0 <= self.opponent_robots <= 3:
+            raise ValueError("Use zero to three opposing robots")
         self.domain_randomization = domain_randomization
         self.rng = np.random.default_rng(seed)
         self.reset_match(seed)
@@ -195,7 +199,7 @@ class HockeyPhysicsEngine:
         cfg = self.robot_config
         for team, collection in [(0, self.blue_robots), (1, self.red_robots)]:
             sign = 1 if team == 0 else -1
-            for role in range(self.robots_per_team):
+            for role in range(self.robots_per_team if team == 0 else self.opponent_robots):
                 parts = collision_parts(cfg)
                 body = pymunk.Body(cfg.mass, cfg.inertia or estimated_inertia(cfg))
                 x = (-self.arena.length * 0.22, -self.arena.length * 0.32, -self.arena.half_length + 18)[
@@ -310,8 +314,14 @@ class HockeyPhysicsEngine:
         return goal
 
     def step(self, blue_actions, red_actions):
-        acts = np.asarray(list(blue_actions) + list(red_actions), dtype=float)
-        if acts.shape != (2 * self.robots_per_team, 2) or not np.isfinite(acts).all():
+        blue = np.asarray(blue_actions, dtype=float)
+        red = np.asarray(red_actions, dtype=float)
+        if red.size == 0:
+            red = red.reshape(0, 2)
+        if blue.shape != (self.robots_per_team, 2) or red.shape != (self.opponent_robots, 2):
+            raise ValueError("Wheel action count differs from the robots actually present")
+        acts = np.concatenate([blue, red])
+        if not np.isfinite(acts).all():
             raise ValueError("Expected finite wheel actions for both teams")
         acts = np.clip(acts, -1, 1)
         sim = self.simulation
