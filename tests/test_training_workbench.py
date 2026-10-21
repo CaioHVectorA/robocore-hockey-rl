@@ -202,7 +202,7 @@ def test_panel_mouse_preset_and_keyboard_edit_reach_worker_config(tmp_path, monk
         panel = TrainingPanel(tmp_path, fonts, previews.append, lambda *args: None)
         panel.draw(surface, pygame.Rect(0, 0, 460, 960))
         # Second preset: genuinely one robot and no opponent.
-        panel.handle(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(330, 170), button=1))
+        panel.handle(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(330, panel.content.y + 45), button=1))
         assert panel.config.opponent_robots == 0 and panel.config.robots_per_team == 1
         assert previews[-1] == panel.config
         panel.tab = "PPO"
@@ -211,8 +211,88 @@ def test_panel_mouse_preset_and_keyboard_edit_reach_worker_config(tmp_path, monk
         panel.handle(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=field.center, button=1))
         panel.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_0, unicode="0.0001", mod=0))
         panel.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode="", mod=0))
+        panel.tab = "Recompensas"
+        panel.draw(surface, pygame.Rect(0, 0, 460, 960))
+        field = next(rect for rect, key, _ in panel.fields if key == "reward.approach")
+        panel.handle(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=field.center, button=1))
+        panel.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_0, unicode="1,7", mod=0))
+        panel.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB, unicode="", mod=0))
+        assert panel.config.reward.approach == 1.7
+        assert panel.focus[0] == "reward.time_penalty"
+        panel.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, unicode="", mod=0))
         monkeypatch.setattr(panel.worker, "start", started.append)
         panel.start()
         assert started[-1].learning_rate == 0.0001 and started[-1].opponent == "none"
+        assert started[-1].reward.approach == 1.7
     finally:
         pygame.quit()
+
+
+def test_atomic_json_retries_windows_lock_and_preserves_last_good_file(tmp_path, monkeypatch):
+    from rl.training import atomic_json
+
+    path = tmp_path / "live.json"
+    atomic_json(path, {"frame": 1})
+    replace_file = Path.replace
+    calls = []
+
+    def locked(source, target):
+        calls.append(target)
+        if len(calls) <= 2:
+            raise PermissionError(13, "Windows reader holds the destination")
+        return replace_file(source, target)
+
+    monkeypatch.setattr(Path, "replace", locked)
+    assert atomic_json(path, {"frame": 2})
+    assert len(calls) == 3 and read_json(path) == {"frame": 2}
+
+    def always_locked(*args):
+        raise PermissionError(13, "Destination is busy")
+
+    monkeypatch.setattr(Path, "replace", always_locked)
+    assert not atomic_json(path, {"frame": 3}, best_effort=True)
+    assert read_json(path) == {"frame": 2}
+    with pytest.raises(PermissionError):
+        atomic_json(path, {"frame": 4})
+    assert read_json(path) == {"frame": 2}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_telemetry_lock_does_not_abort_training_or_prevent_final_checkpoint(tmp_path, monkeypatch):
+    replace_file = Path.replace
+
+    def busy_live_file(source, target):
+        if Path(target).name == "live.json":
+            raise PermissionError(13, "UI is reading the frame")
+        return replace_file(source, target)
+
+    monkeypatch.setattr(Path, "replace", busy_live_file)
+    cfg = replace(
+        preset_config("solo_goal"), steps=16, envs=1, rollout=8, epochs=1, episode_seconds=1, eval_episodes=1
+    )
+    session = TrainingSession(cfg, tmp_path)
+    session.run()
+    status = read_json(tmp_path / "status.json")
+    assert status["state"] == "completed"
+    assert status["dropped_frames"] > 0
+    assert status["session_transitions"] == 16
+    checkpoint = HockeyPPOTrainer()
+    checkpoint.load(tmp_path / "latest.pt", resume=True)
+    assert checkpoint.environment_steps == 16 and checkpoint.updates_count == 2
+
+
+def test_interpolation_wraps_angles_and_never_blends_episode_resets_or_max_speed():
+    from ui.live_view import interpolate_frames
+
+    first = dict(timestamp=10.0, time=1, episode=1, speed=1, robots=[[0, 0, np.pi - 0.1, 0, 0]], puck=[0, 0])
+    second = dict(
+        timestamp=10.1, time=1.1, episode=1, speed=1, robots=[[10, 20, -np.pi + 0.1, 0, 0]], puck=[4, 6]
+    )
+    frame = interpolate_frames([first, second], 10.05)
+    np.testing.assert_allclose(frame["robots"][0][:3], [5, 10, np.pi], atol=1e-6)
+    np.testing.assert_allclose(frame["puck"], [2, 3])
+    assert first["robots"][0][0] == 0  # rendering cannot mutate a recorded training pose
+    for changes in (dict(episode=2), dict(time=0), dict(speed=0), dict(timestamp=10.5)):
+        reset = dict(second, **changes)
+        assert interpolate_frames([first, reset], 10.05) is reset
+    assert interpolate_frames([first, second], 10.2) is second

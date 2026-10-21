@@ -18,7 +18,13 @@ python main.py
 
 A interface abre na **bancada de treino**, com o padrão **3v3 self-play**. Escolha um exercício, ajuste os campos e clique **Iniciar treino**. O campo mostra o primeiro ambiente que está realmente gerando experiências do PPO. Há pausa, ritmo 1×/5×/máximo, encerramento com salvamento, gráficos e histórico de sessões.
 
+Use **Recompensas** para editar a tabela de pesos e entender cada componente, e **PPO** para consultar ou configurar os hiperparâmetros. O painel sob a arena separa FPS da janela, quadros do treino, passos/s e velocidade do robô; também explica as pausas para atualização e avaliação. Erros abrem um diagnóstico completo, e bloqueios temporários do arquivo de visualização no Windows não encerram o treino.
+
 Para treinar um robô sozinho a buscar o disco e levar ao gol, selecione **Solo · buscar e marcar**. **Solo · ir ao disco** ensina a aproximação; finalização e defesa também têm presets. Quantidade de robôs, cenário, duração, seed, recompensas e parâmetros do PPO são editáveis. Os adversários do treino solo não existem na física. Veja o [guia da bancada](docs/TRAINING_WORKBENCH.md).
+
+**Solo · progressivo até o gol** oferece um currículo próprio: finalizar perto do gol, conduzir e depois buscar de qualquer direção e marcar. Avança conforme o sucesso, mantendo as recompensas fixas. Usa `micro-practice`, com gols recuados em três paredes inspirados na referência da pista, dentro de uma área de jogo de 300 × 150 cm. [Medidas, recompensas e critérios de promoção](docs/ARENA_AND_SOLO_TRAINING.md).
+
+**1v1 · self-play** treina contra versões congeladas da política em saídas, posições variadas, ataque e defesa. Há histórico de adversários nos checkpoints, avaliação contra bot e política inicial e modo **Humano × PPO** para você controlar o vermelho. A CLI aceita limite de horas/horário e inibição temporária de suspensão para [treino noturno](docs/OVERNIGHT_1V1.md).
 
 **Ver treino ao vivo** acompanha a coleta exploratória. **Avaliar últimos pesos** abre uma simulação independente com pesos congelados. **Pré-visualizar exercício** usa o bot tático e é identificado como prévia. A aba **Simular** preserva controle manual, pausa, arraste, impulso, tracking e replay. **1/2/3** alternam controlador; **P** pausa; **V** tracking; **Tab** seleciona; WASD/setas e espaço controlam o robô na bancada manual.
 
@@ -37,6 +43,23 @@ python main.py --profile tabletop
 A categoria comercial HockeyBot não foi presumida equivalente à Micro. A referência do robô e o perfil de arena são independentes; o perfil padrão não comprova as dimensões da arena de um evento HockeyBot.
 
 ## Treinar e avaliar
+
+Os [checkpoints preservados](checkpoints/README.md) incluem a POC solo e o estado do 1v1 de 21/10/2026, com otimizador e liga para retomada. A demonstração abaixo é um episódio selecionado da POC, sem comprovar domínio da tarefa completa:
+
+![POC: política PPO conduzindo o disco até o gol](docs/assets/ppo-conducao-gol.gif)
+
+```bash
+python train.py --resume checkpoints/duel-selfplay-20261021.pt --steps 100000000 --max-hours 8 --keep-awake --no-live
+python main.py --training-config configs/training/duel_selfplay.json --policy checkpoints/duel-selfplay-20261021.pt --human
+```
+
+Para treinar sem abrir a UI, use a [CLI headless](docs/CLI.md). Ela permite configurar recompensas e PPO, acompanhar o progresso, pausar, encerrar com salvamento e retomar checkpoints:
+
+```bash
+python train.py --preset solo_goal --steps 100000 --reward approach=1.2 --no-live
+python main.py --headless --preset solo_goal --steps 100000 --no-live
+python train.py --help
+```
 
 ```bash
 python main.py --preset solo_goal

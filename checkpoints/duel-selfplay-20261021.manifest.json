@@ -1,0 +1,235 @@
+{
+  "name": "1v1 self-play preserved after cooperative stop",
+  "preserved_at": "2026-10-21T23:37:11.879297+00:00",
+  "files": [
+    {
+      "checkpoint": "checkpoints/duel-selfplay-20261021.pt",
+      "source": "runs/experiments/duel-overnight-20261021/latest.pt",
+      "sha256": "30efa119dbb2355b406625baa4e747e098ab2e7ef90a1b4ab36cdfb61b3130db",
+      "bytes": 3261574
+    },
+    {
+      "checkpoint": "checkpoints/duel-selfplay-20261021.best.pt",
+      "source": "runs/experiments/duel-overnight-20261021/latest.best.pt",
+      "sha256": "7af4e8ab7ecd374c7f917b0479bae134123b12a45d46e74ec49ef49fe3c762de",
+      "bytes": 3060927
+    }
+  ],
+  "final_status": {
+    "state": "stopped",
+    "session_transitions": 1221152,
+    "target": 100000000,
+    "wall_seconds": 3893.8860998999953,
+    "updated_at": 1792624964.583934,
+    "checkpoint": "C:\\Users\\caihe\\Documents\\develop\\robocore-hockey-rl\\runs\\experiments\\duel-overnight-20261021\\latest.pt",
+    "dropped_frames": 0,
+    "updates": 597,
+    "curriculum": null,
+    "deadline": 1792663200.0,
+    "stop_reason": "requested",
+    "evaluation": {
+      "episodes": 12,
+      "wins": 0,
+      "losses": 2,
+      "timeouts": 10,
+      "success_rate": 0.0,
+      "win_rate": 0.0,
+      "point_score": 0.4166666666666667,
+      "complete": true,
+      "opponent": "fixed_suite",
+      "scenario": "faceoff+random",
+      "by_opponent": {
+        "heuristic": {
+          "episodes": 6,
+          "scenario": "faceoff+random",
+          "objective": "score",
+          "robots_per_team": 1,
+          "opponent_robots": 1,
+          "wins": 0,
+          "losses": 2,
+          "timeouts": 4,
+          "win_rate": 0.0,
+          "success_rate": 0.0,
+          "point_score": 0.3333333333333333,
+          "mean_reward": -22.164979362341303,
+          "opponent": "heuristic",
+          "records": [
+            {
+              "seed": 10000,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -21.163520633708686,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10001,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -15.822580529362313,
+              "scenario": "random"
+            },
+            {
+              "seed": 10002,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -25.639385791451787,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10003,
+              "success": false,
+              "result": "opponent_goal",
+              "goal": -1,
+              "steps": 958,
+              "reward": -30.374408745759865,
+              "scenario": "random"
+            },
+            {
+              "seed": 10004,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -15.065891984035261,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10005,
+              "success": false,
+              "result": "opponent_goal",
+              "goal": -1,
+              "steps": 385,
+              "reward": -24.92408848972991,
+              "scenario": "random"
+            }
+          ]
+        },
+        "initial_policy": {
+          "episodes": 6,
+          "scenario": "faceoff+random",
+          "objective": "score",
+          "robots_per_team": 1,
+          "opponent_robots": 1,
+          "wins": 0,
+          "losses": 0,
+          "timeouts": 6,
+          "win_rate": 0.0,
+          "success_rate": 0.0,
+          "point_score": 0.5,
+          "mean_reward": -19.854115062075532,
+          "opponent": "initial_policy",
+          "records": [
+            {
+              "seed": 10000,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -20.689784177273395,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10001,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -19.018116978928447,
+              "scenario": "random"
+            },
+            {
+              "seed": 10002,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -22.90372946372372,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10003,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -15.14163541601738,
+              "scenario": "random"
+            },
+            {
+              "seed": 10004,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -22.46444894891465,
+              "scenario": "faceoff"
+            },
+            {
+              "seed": 10005,
+              "success": false,
+              "result": "timeout",
+              "goal": 0,
+              "steps": 1800,
+              "reward": -18.906975387595594,
+              "scenario": "random"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "training_config": {
+    "name": "1v1 self-play noturno 21-22/10/2026",
+    "profile": "micro-practice",
+    "robots_per_team": 1,
+    "opponent_robots": 1,
+    "objective": "score",
+    "scenario": "duel",
+    "opponent": "selfplay",
+    "steps": 100000000,
+    "envs": 8,
+    "rollout": 256,
+    "episode_seconds": 60.0,
+    "seed": 42,
+    "learning_rate": 0.0002,
+    "gamma": 0.997,
+    "gae_lambda": 0.95,
+    "clip_eps": 0.2,
+    "target_kl": 0.02,
+    "entropy_coef": 0.005,
+    "epochs": 6,
+    "batch_size": 512,
+    "snapshot_every": 10,
+    "eval_every": 100,
+    "eval_episodes": 6,
+    "opponent_difficulty": 0.85,
+    "domain_randomization": true,
+    "spawn_distance": 60.0,
+    "random_heading": true,
+    "speed": 0.0,
+    "init_mode": "transfer",
+    "checkpoint": "checkpoints/poc-solo-20261021.pt",
+    "reward": {
+      "goal": 20.0,
+      "progress": 3.0,
+      "approach": 0.4,
+      "time_penalty": 0.006,
+      "energy_penalty": 0.001,
+      "reach_bonus": 10.0,
+      "reach_distance": 10.0
+    },
+    "curriculum_success_threshold": 0.7,
+    "curriculum_min_episodes": 30,
+    "curriculum_window": 50,
+    "selfplay_pool_size": 12,
+    "selfplay_anchor_probability": 0.2,
+    "evaluation_suite": true
+  },
+  "note": "Checkpoint snapshots, not proof of human or physical performance. Resume from the final checkpoint in a new run directory."
+}

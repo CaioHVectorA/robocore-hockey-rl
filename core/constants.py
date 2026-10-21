@@ -200,6 +200,7 @@ class SimulationConfig:
 
 PROFILES = {
     "micro-2024": ArenaConfig(),
+    "micro-practice": ArenaConfig(name="micro-practice", goal_depth=26.0),
     "micro-large": ArenaConfig(name="micro-large", length=366.0, width=183.0, corner_radius=15.0),
     "tabletop": ArenaConfig(
         name="tabletop",

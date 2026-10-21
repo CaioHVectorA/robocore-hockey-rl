@@ -12,7 +12,17 @@ from vision.camera_tracker import SimulatedPartialVisionSensor
 from vision.state import EntityState, WorldState, OBS_DIM, build_team_observation, tracking_ready
 from rl.tasks import RewardConfig
 
-SCENARIOS = ("faceoff", "shooting", "defending", "random", "solo")
+SCENARIOS = (
+    "faceoff",
+    "shooting",
+    "defending",
+    "random",
+    "solo",
+    "solo_finish",
+    "solo_carry",
+    "solo_search",
+    "duel",
+)
 
 
 class RoboCoreHockeyEnv(gym.Env):
@@ -63,6 +73,8 @@ class RoboCoreHockeyEnv(gym.Env):
             opponent_robots=opponent_robots,
         )
         self.opponent_robots = self.engine.opponent_robots
+        if scenario == "duel" and (robots_per_team != 1 or self.opponent_robots != 1):
+            raise ValueError("Duel requires one robot on each team")
         self.arena = self.engine.arena
         self.simulation = self.engine.simulation
         self.opponent_bot = HeuristicHockeyBot(1, opponent_difficulty)
@@ -138,10 +150,71 @@ class RoboCoreHockeyEnv(gym.Env):
         a = self.arena
         e = self.engine
         r = e.blue_robots[0]
-        if scenario == "solo":
-            px = e.rng.uniform(-a.length * 0.12, a.length * 0.22)
-            py = e.rng.uniform(-a.width * 0.25, a.width * 0.25)
-            bearing = e.rng.uniform(-1.0, 1.0)
+        self.initialization = scenario
+        if scenario == "duel":
+            red = e.red_robots[0]
+            layout = str(e.rng.choice(["faceoff", "random", "attack", "defend"], p=[0.35, 0.35, 0.15, 0.15]))
+            self.initialization = layout
+            if layout == "random":
+                for bot, side in ((r, -1), (red, 1)):
+                    e.place_robot(
+                        bot,
+                        side * e.rng.uniform(25, a.length * 0.35),
+                        e.rng.uniform(-a.width * 0.3, a.width * 0.3),
+                        e.rng.uniform(-math.pi, math.pi),
+                    )
+                e.place_puck(
+                    e.rng.uniform(-a.length * 0.15, a.length * 0.15),
+                    e.rng.uniform(-a.width * 0.25, a.width * 0.25),
+                )
+            elif layout in ("attack", "defend"):
+                side = 1 if layout == "attack" else -1
+                attacker, defender = (r, red) if side == 1 else (red, r)
+                px, py = (
+                    side * (a.half_length - e.rng.uniform(20, 40)),
+                    e.rng.uniform(-a.goal_width * 0.25, a.goal_width * 0.25),
+                )
+                bearing = math.atan2(-py, side * (a.half_length + a.goal_depth / 2) - px)
+                distance = e.rng.uniform(13, 20)
+                e.place_robot(
+                    attacker,
+                    px - math.cos(bearing) * distance,
+                    py - math.sin(bearing) * distance,
+                    bearing + e.rng.uniform(-0.25, 0.25),
+                )
+                e.place_robot(
+                    defender,
+                    side * (a.half_length - 24),
+                    (1 if py < 0 else -1) * (a.goal_width / 2 + 14),
+                    math.pi if side == 1 else 0,
+                )
+                e.place_puck(px, py)
+        elif scenario in ("solo_finish", "solo_carry"):
+            if scenario == "solo_finish":
+                px, py = (
+                    a.half_length - e.rng.uniform(8, 30),
+                    e.rng.uniform(-a.goal_width * 0.22, a.goal_width * 0.22),
+                )
+                distance, heading_noise = e.rng.uniform(12, 18), 0.18
+            else:
+                px, py = (
+                    e.rng.uniform(-a.length * 0.05, a.half_length - 35),
+                    e.rng.uniform(-a.width * 0.25, a.width * 0.25),
+                )
+                distance, heading_noise = e.rng.uniform(12, 25), 0.4
+            bearing = math.atan2(-py, a.half_length + a.goal_depth / 2 - px)
+            e.place_robot(
+                r,
+                px - math.cos(bearing) * distance,
+                py - math.sin(bearing) * distance,
+                bearing + (e.rng.uniform(-heading_noise, heading_noise) if self.random_heading else 0),
+            )
+            e.place_puck(px, py)
+        elif scenario in ("solo", "solo_search"):
+            broad = scenario == "solo_search"
+            px = e.rng.uniform(-a.length * (0.25 if broad else 0.12), a.length * (0.3 if broad else 0.22))
+            py = e.rng.uniform(-a.width * (0.35 if broad else 0.25), a.width * (0.35 if broad else 0.25))
+            bearing = e.rng.uniform(-math.pi, math.pi) if broad else e.rng.uniform(-1.0, 1.0)
             distance = e.rng.uniform(self.spawn_distance * 0.5, self.spawn_distance)
             heading = e.rng.uniform(-math.pi, math.pi) if self.random_heading else bearing
             e.place_robot(r, px - math.cos(bearing) * distance, py - math.sin(bearing) * distance, heading)
@@ -173,8 +246,12 @@ class RoboCoreHockeyEnv(gym.Env):
         self.prev_approach = self._approach()
         self._ended = False
         self.metrics = dict(shots_blue=0, shots_red=0, touches_blue=0, idle_steps=0, tracking_lost_steps=0)
+        self.last_reward_components = dict.fromkeys(
+            ("goal", "progress", "approach", "time_penalty", "energy_penalty", "reach_bonus"), 0.0
+        )
+        self.episode_reward_components = dict(self.last_reward_components)
         self._shot_side = 0
-        return self.get_team_obs(), dict(scenario=scenario)
+        return self.get_team_obs(), dict(scenario=scenario, initialization=self.initialization)
 
     def step(self, action, custom_red_actions=None):
         if self._ended:
@@ -211,10 +288,21 @@ class RoboCoreHockeyEnv(gym.Env):
         pursuit = rc.approach * (self.shaping_gamma * (0.0 if terminated else approach) - self.prev_approach)
         self.prev_potential = phi
         self.prev_approach = approach
-        reward = shaping + pursuit - rc.time_penalty
-        reward += rc.goal * info["goal_scored"] + rc.reach_bonus * reached
         energy = rc.energy_penalty * np.mean(np.square(act), axis=1)
+        # Expose signed, weighted terms. Their sum is exactly the team mean reward.
+        components = dict(
+            goal=rc.goal * info["goal_scored"],
+            progress=shaping,
+            approach=pursuit,
+            time_penalty=-rc.time_penalty,
+            energy_penalty=-float(energy.mean()),
+            reach_bonus=rc.reach_bonus * reached,
+        )
+        reward = sum(value for key, value in components.items() if key != "energy_penalty")
         indiv = reward - energy
+        self.last_reward_components = components
+        for key, value in components.items():
+            self.episode_reward_components[key] += value
         self.metrics["touches_blue"] += int(any(r.touched_puck for r in self.engine.blue_robots))
         self.metrics["idle_steps"] += int(max(math.hypot(r.vx, r.vy) for r in self.engine.blue_robots) < 2.0)
         self.metrics["tracking_lost_steps"] += int(
@@ -232,6 +320,8 @@ class RoboCoreHockeyEnv(gym.Env):
         self._ended = terminated or truncated
         info.update(self.metrics)
         info["individual_rewards"] = indiv.astype(np.float32)
+        info["reward_components"] = components
+        info["episode_reward_components"] = dict(self.episode_reward_components)
         info["episode_seconds"] = self.engine.episode_time
         info["distance_to_puck"] = distance
         info["is_success"] = bool(reached or info["goal_scored"] == 1)

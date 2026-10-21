@@ -11,10 +11,12 @@ import torch
 from core.constants import PROFILES
 from bots.hockey_bot import HeuristicHockeyBot
 from rl.ppo_trainer import HockeyPPOTrainer
-from rl.training import frame_from_env
+from rl.training import frame_from_env, curriculum_stage
 from rl.training_config import TrainingConfig, preset_config, PRESET_LABELS
 from ui.arena_view import draw_arena, projection
-from ui.training_panel import TrainingPanel, BG, TEXT, MUTED, ACCENT, EDGE, GREEN
+from ui.training_panel import TrainingPanel, BG, TEXT, MUTED, ACCENT, EDGE, GREEN, TABS
+from ui.text_rendering import fit_text, render_text
+from ui.timing import FrameClock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,13 +30,16 @@ def run_hockey_gui(
     preset=None,
     auto_train=False,
     initial_tab="Treino",
+    human=False,
 ):
     pygame.init()
     torch.set_num_threads(1)
     screen = pygame.display.set_mode((1600, 960), pygame.RESIZABLE)
     pygame.display.set_caption("Hockey Lab · Bancada de treino PPO")
-    clock = pygame.time.Clock()
-    fonts = {n: pygame.font.SysFont("DejaVu Sans", n, bold=n >= 22) for n in (12, 14, 16, 18, 22, 28, 40)}
+    clock = FrameClock()
+    fonts = {
+        n: pygame.font.SysFont("Segoe UI,DejaVu Sans", n, bold=n >= 22) for n in (12, 14, 16, 18, 22, 28, 40)
+    }
     config = training_config or TrainingConfig(profile=profile)
     if preset:
         config = preset_config(preset, config)
@@ -66,7 +71,7 @@ def run_hockey_gui(
         episode = 1
 
     def evaluate(path, cfg):
-        nonlocal trainer, mode, loaded, status
+        nonlocal trainer, mode, loaded, status, obs
         candidate = HockeyPPOTrainer()
         meta = candidate.load(path)
         expected = cfg.make_env().configuration()
@@ -75,6 +80,8 @@ def run_hockey_gui(
         if not candidate.updates_count:
             raise ValueError("Esses pesos ainda não tiveram atualizações de PPO")
         prepare(cfg)
+        env.scenario = curriculum_stage(cfg, 1)
+        obs, _ = env.reset(seed=cfg.seed)
         trainer, mode, loaded = candidate, "Política PPO", True
         status = f"Avaliação visual · pesos congelados na atualização {trainer.updates_count}"
 
@@ -89,11 +96,8 @@ def run_hockey_gui(
         panel.start()
 
     def text(label, x, y, size=16, color=TEXT, width=None):
-        value = str(label)
-        if width:
-            while len(value) > 2 and fonts[size].size(value)[0] > width:
-                value = value[:-2] + "…"
-        screen.blit(fonts[size].render(value, True, color), (int(x), int(y)))
+        value = fit_text(fonts[size], str(label), width)
+        screen.blit(render_text(fonts[size], value, color), (int(x), int(y)))
 
     def button(label, rect, callback, active=False):
         rect = pygame.Rect(rect)
@@ -106,7 +110,8 @@ def run_hockey_gui(
 
     def reset(new_match=True, scenario=None):
         nonlocal obs, accumulator, replay_index, match_over, sudden_death
-        obs, _ = env.reset(options={"preserve_match": not new_match, "scenario": scenario or env.scenario})
+        reset_scenario = "faceoff" if mode == "Humano × PPO" else scenario or env.scenario
+        obs, _ = env.reset(options={"preserve_match": not new_match, "scenario": reset_scenario})
         accumulator, replay_index = 0.0, None
         if new_match:
             replay.clear()
@@ -115,17 +120,30 @@ def run_hockey_gui(
     def set_mode(value):
         nonlocal mode, status
         panel.watch_live = False
-        if value == "Política PPO" and not loaded:
-            panel.evaluate()
+        if value == "Humano × PPO" and (config.robots_per_team != 1 or config.opponent_robots != 1):
+            panel.notify("Selecione o exercício 1v1 e carregue os pesos para jogar contra a IA", True)
             return
+        if value in ("Política PPO", "Humano × PPO") and not loaded:
+            panel.evaluate()
+            if not loaded:
+                return
         mode = value
         status = (
-            "Bancada manual · WASD / setas"
+            "Você controla o vermelho · WASD / setas · IA controla o azul"
+            if value == "Humano × PPO"
+            else "Bancada manual · WASD / setas"
             if value == "Bancada manual"
             else f"Avaliação · atualização {trainer.updates_count}"
             if value == "Política PPO"
             else "Prévia do exercício · bot tático"
         )
+        if value == "Humano × PPO":
+            reset()
+
+    def manual_action(keys):
+        fwd = int(keys[pygame.K_w] or keys[pygame.K_UP]) - int(keys[pygame.K_s] or keys[pygame.K_DOWN])
+        turn = int(keys[pygame.K_a] or keys[pygame.K_LEFT]) - int(keys[pygame.K_d] or keys[pygame.K_RIGHT])
+        return [-1, 1] if keys[pygame.K_SPACE] else np.clip([fwd - turn * 0.7, fwd + turn * 0.7], -1, 1)
 
     def pause_view():
         nonlocal paused
@@ -142,6 +160,9 @@ def run_hockey_gui(
         nonlocal tracking
         tracking = not tracking
 
+    if human:
+        panel.tab = "Simular"
+        set_mode("Humano × PPO")
     running = True
     try:
         while running:
@@ -150,9 +171,10 @@ def run_hockey_gui(
             if w < 1180 or h < 800:
                 screen = pygame.display.set_mode((max(1180, w), max(800, h)), pygame.RESIZABLE)
                 w, h = screen.get_size()
-            side_w = 460
+            side_w = min(540, max(480, round(w * 0.34)))
             left_w = w - side_w - 56
-            field = pygame.Rect(20, 144, left_w, h - 410)
+            field = pygame.Rect(20, 144, left_w, h - 511)
+            health_rect = pygame.Rect(20, h - 355, left_w, 98)
             metrics_rect = pygame.Rect(20, h - 252, left_w, 133)
             world, metric, scale = projection(field, env.arena)
             panel.worker.poll()
@@ -171,12 +193,13 @@ def run_hockey_gui(
                         reset()
                     elif event.key == pygame.K_v:
                         tracking = not tracking
-                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
                         set_mode(
                             {
                                 pygame.K_1: "Demonstração",
                                 pygame.K_2: "Bancada manual",
                                 pygame.K_3: "Política PPO",
+                                pygame.K_4: "Humano × PPO",
                             }[event.key]
                         )
                     elif event.key == pygame.K_TAB:
@@ -242,29 +265,21 @@ def run_hockey_gui(
                 accumulator += elapsed * speed
                 for _ in range(min(16, int(accumulator / env.engine.dt))):
                     accumulator -= env.engine.dt
-                    if mode == "Política PPO" and loaded:
+                    if mode in ("Política PPO", "Humano × PPO") and loaded:
                         actions, _, _ = trainer.select_action(obs, deterministic=True)
                     else:
                         actions = np.array(bot.get_actions(env.engine, env.state), np.float32)
                         if mode == "Bancada manual":
                             keys = pygame.key.get_pressed()
-                            fwd = int(keys[pygame.K_w] or keys[pygame.K_UP]) - int(
-                                keys[pygame.K_s] or keys[pygame.K_DOWN]
-                            )
-                            turn = int(keys[pygame.K_a] or keys[pygame.K_LEFT]) - int(
-                                keys[pygame.K_d] or keys[pygame.K_RIGHT]
-                            )
-                            actions[selected] = (
-                                [-1, 1]
-                                if keys[pygame.K_SPACE]
-                                else np.clip([fwd - turn * 0.7, fwd + turn * 0.7], -1, 1)
-                            )
+                            actions[selected] = manual_action(keys)
                     red = (
                         np.zeros((config.opponent_robots, 2)) if config.opponent in ("none", "zero") else None
                     )
+                    if mode == "Humano × PPO":
+                        red = np.array([manual_action(pygame.key.get_pressed())], np.float32)
                     obs, _, term, trunc, info = env.step(actions, red)
                     replay.append(frame_from_env(env))
-                    task = (
+                    task = mode != "Humano × PPO" and (
                         config.objective == "reach"
                         or config.opponent_robots == 0
                         or config.scenario != "faceoff"
@@ -287,7 +302,7 @@ def run_hockey_gui(
                     if match_over:
                         break
             data = (
-                panel.worker.frame
+                panel.worker.display_frame()
                 if panel.live
                 else replay[replay_index]
                 if replay_index is not None and replay
@@ -300,6 +315,8 @@ def run_hockey_gui(
             live_label = (
                 "TREINO AO VIVO · ambiente 1 · ações exploratórias"
                 if panel.watch_live
+                else "VOCÊ: VERMELHO (WASD / SETAS) · IA PPO: AZUL · 1v1"
+                if mode == "Humano × PPO"
                 else "REPLAY · quadro gravado"
                 if replay_index is not None
                 else "AVALIAÇÃO VISUAL · pesos congelados"
@@ -350,18 +367,19 @@ def run_hockey_gui(
             if flick:
                 pygame.draw.line(screen, ACCENT, world(*flick), pygame.mouse.get_pos(), 2)
             panel.draw_metrics(screen, metrics_rect)
+            panel.draw_health(screen, health_rect, data, clock.get_fps())
             content = panel.draw(screen, pygame.Rect(w - side_w - 20, 101, side_w, h - 121))
             if panel.tab == "Simular":
                 screen.set_clip(content)
                 x, y, width = content.x, content.y, content.width
-                for j, value in enumerate(("Demonstração", "Bancada manual", "Política PPO")):
+                for j, value in enumerate(("Demonstração", "Bancada manual", "Política PPO", "Humano × PPO")):
                     button(
                         value,
                         (x, y + j * 39, width, 32),
                         lambda v=value: set_mode(v),
                         mode == value and not panel.watch_live,
                     )
-                y += 132
+                y += 171
                 button("Pausar / continuar [P]", (x, y, width, 32), pause_view)
                 button(
                     "Nova partida [R]",
@@ -389,7 +407,7 @@ def run_hockey_gui(
             )
             text(footer, 25, h - 99, 14, ACCENT, left_w)
             text(
-                f"{'Chegar até o disco' if config.objective == 'reach' else 'Buscar o disco e marcar gol'} · {config.robots_per_team}v{config.opponent_robots} · FPS {clock.get_fps():.0f}",
+                f"{'Chegar até o disco' if config.objective == 'reach' else 'Buscar o disco e marcar gol'} · {config.robots_per_team}v{config.opponent_robots}",
                 25,
                 h - 71,
                 12,
@@ -397,13 +415,14 @@ def run_hockey_gui(
                 left_w,
             )
             text(
-                "Treino ao vivo mostra a coleta; Avaliar usa uma cópia congelada dos pesos.",
+                "Para observar: ritmo 1×. Para treinar mais rápido: Máximo. Avaliar usa pesos congelados.",
                 25,
                 h - 47,
                 12,
                 MUTED,
                 left_w,
             )
+            panel.draw_details(screen)
             pygame.display.flip()
             frames += 1
             if screenshot and (frames >= max_frames if max_frames else frames == 1):
@@ -417,7 +436,10 @@ def run_hockey_gui(
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Treino sem janela: python main.py --headless --preset solo_goal. Ajuda: python train.py --help",
+    )
     parser.add_argument("--profile", choices=PROFILES, default="micro-2024")
     parser.add_argument("--policy")
     parser.add_argument("--screenshot")
@@ -425,11 +447,22 @@ def main():
     parser.add_argument("--training-config")
     parser.add_argument("--preset", choices=PRESET_LABELS)
     parser.add_argument("--train", action="store_true", help="Start the configured session immediately")
-    parser.add_argument("--tab", choices=["Treino", "PPO", "Sessões", "Simular"], default="Treino")
+    parser.add_argument(
+        "--human", action="store_true", help="Você controla o vermelho contra PPO azul num exercício 1v1"
+    )
+    parser.add_argument("--tab", choices=TABS, default="Treino")
     args = parser.parse_args()
     config = TrainingConfig.load(args.training_config) if args.training_config else None
     run_hockey_gui(
-        args.profile, args.policy, args.screenshot, args.frames, config, args.preset, args.train, args.tab
+        args.profile,
+        args.policy,
+        args.screenshot,
+        args.frames,
+        config,
+        args.preset,
+        args.train,
+        args.tab,
+        args.human,
     )
 
 

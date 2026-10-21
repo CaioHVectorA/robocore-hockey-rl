@@ -1,0 +1,106 @@
+{
+  "name": "POC solo: finalizacao e conducao, preservada antes do 1v1",
+  "checkpoint": "checkpoints\\poc-solo-20261021.pt",
+  "sha256": "9d39ef524e10b05e44f96ea801d9f7e4f02b74e1e6335d514fb12ff45d593f6a",
+  "source": "runs\\experiments\\solo-curriculum-learning-check\\latest.pt",
+  "preserved_at": "2026-10-21T22:04:46.112293+00:00",
+  "training_config": {
+    "name": "Solo · progressivo até o gol",
+    "profile": "micro-practice",
+    "robots_per_team": 1,
+    "opponent_robots": 0,
+    "objective": "score",
+    "scenario": "solo_curriculum",
+    "opponent": "none",
+    "steps": 57344,
+    "envs": 8,
+    "rollout": 256,
+    "episode_seconds": 5.0,
+    "seed": 42,
+    "learning_rate": 0.0003,
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "clip_eps": 0.2,
+    "target_kl": 0.02,
+    "entropy_coef": 0.002,
+    "epochs": 6,
+    "batch_size": 512,
+    "snapshot_every": 5,
+    "eval_every": 10,
+    "eval_episodes": 2,
+    "opponent_difficulty": 0.85,
+    "domain_randomization": true,
+    "spawn_distance": 60.0,
+    "random_heading": true,
+    "speed": 0.0,
+    "init_mode": "resume",
+    "checkpoint": "C:\\Users\\caihe\\Documents\\develop\\robocore-hockey-rl\\runs\\experiments\\solo-curriculum-validation\\latest.pt",
+    "reward": {
+      "goal": 20.0,
+      "progress": 3.0,
+      "approach": 0.4,
+      "time_penalty": 0.006,
+      "energy_penalty": 0.001,
+      "reach_bonus": 10.0,
+      "reach_distance": 10.0
+    },
+    "curriculum_success_threshold": 0.7,
+    "curriculum_min_episodes": 30,
+    "curriculum_window": 50
+  },
+  "validation_summary": {
+    "total_transitions": 65536,
+    "updates": 32,
+    "by_stage": {
+      "solo_finish": {
+        "episodes": 447,
+        "goals": 99,
+        "last_30_goals": 22
+      },
+      "solo_carry": {
+        "episodes": 43,
+        "goals": 1,
+        "last_30_goals": 0
+      },
+      "solo_search": {
+        "episodes": 0,
+        "goals": 0,
+        "last_30_goals": 0
+      }
+    },
+    "final_evaluation": {
+      "episodes": 2,
+      "scenario": "solo_search",
+      "objective": "score",
+      "robots_per_team": 1,
+      "opponent_robots": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 2,
+      "win_rate": 0.0,
+      "success_rate": 0.0,
+      "mean_reward": -2.0861259144730866,
+      "opponent": "none",
+      "records": [
+        {
+          "seed": 10000,
+          "success": false,
+          "result": "timeout",
+          "goal": 0,
+          "steps": 150,
+          "reward": -2.3582689417526126
+        },
+        {
+          "seed": 10001,
+          "success": false,
+          "result": "timeout",
+          "goal": 0,
+          "steps": 150,
+          "reward": -1.8139828871935606
+        }
+      ]
+    },
+    "note": "Ensaio curto, episódios de 5s; não comprova competência completa ou física."
+  },
+  "gif": "runs/gifs/ppo-conducao-gol.gif"
+}

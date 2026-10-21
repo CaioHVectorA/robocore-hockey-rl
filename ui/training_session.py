@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 from rl.training import atomic_json, read_json
 from rl.training_config import TrainingConfig
+from ui.live_view import interpolate_frames
 
 
 class TrainingProcess:
@@ -26,6 +27,25 @@ class TrainingProcess:
         self.output = None
         self.offset = 0
         self.last_poll = -float("inf")
+        self.last_report = -float("inf")
+        self.frames = deque(maxlen=12)
+        self.frame_times = deque(maxlen=30)
+        self.last_received = None
+
+    @property
+    def frame_hz(self):
+        if len(self.frame_times) < 2:
+            return 0.0
+        return (len(self.frame_times) - 1) / max(0.001, self.frame_times[-1] - self.frame_times[0])
+
+    @property
+    def frame_age(self):
+        return time.perf_counter() - self.last_received if self.last_received is not None else 0.0
+
+    def display_frame(self):
+        if self.status.get("state") not in ("running", "starting"):
+            return self.frame
+        return interpolate_frames(self.frames, time.time() - 0.075)
 
     @property
     def active(self):
@@ -53,6 +73,10 @@ class TrainingProcess:
         self.config = config
         self.records.clear()
         self.frame = None
+        self.frames.clear()
+        self.frame_times.clear()
+        self.last_received = None
+        self.last_poll = self.last_report = -float("inf")
         self.status = dict(state="starting", target=config.effective_steps, session_transitions=0)
         self.offset = 0
         self.control = dict(paused=False, stop=False, speed=config.speed)
@@ -71,6 +95,7 @@ class TrainingProcess:
             cwd=self.root,
             stdout=self.output,
             stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return self.directory
 
@@ -80,11 +105,20 @@ class TrainingProcess:
             atomic_json(self.directory / "control.json", self.control)
 
     def poll(self, force=False):
-        if self.directory is None or (not force and time.monotonic() - self.last_poll < 0.10):
+        now = time.perf_counter()
+        if self.directory is None or (not force and now - self.last_poll < 1 / 60):
             return
-        self.last_poll = time.monotonic()
+        self.last_poll = now
+        frame = read_json(self.directory / "live.json", self.frame)
+        if frame and (not self.frame or frame.get("timestamp") != self.frame.get("timestamp")):
+            self.frame = frame
+            self.frames.append(frame)
+            self.frame_times.append(now)
+            self.last_received = now
+        if not force and now - self.last_report < 0.15:
+            return
+        self.last_report = now
         self.status = read_json(self.directory / "status.json", self.status)
-        self.frame = read_json(self.directory / "live.json", self.frame)
         try:
             with (self.directory / "metrics.jsonl").open(encoding="utf8") as stream:
                 stream.seek(self.offset)

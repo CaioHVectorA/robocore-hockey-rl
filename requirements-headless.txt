@@ -1,0 +1,6 @@
+# Use in a dedicated virtual environment (opencv-python variants share cv2).
+numpy>=1.26,<3
+gymnasium>=1.0,<2
+torch>=2.6,<3
+opencv-python-headless>=4.8,<6
+pymunk>=7,<8

@@ -7,18 +7,47 @@ import pygame
 from core.constants import PROFILES
 from rl.training_config import TrainingConfig, PRESET_LABELS, preset_config
 from ui.training_session import TrainingProcess, list_sessions
+from ui.text_rendering import fit_text, render_text, wrap_text
 
-BG, PANEL, EDGE = (11, 18, 30), (21, 32, 48), (43, 59, 77)
-TEXT, MUTED, ACCENT, GREEN = (232, 239, 245), (142, 164, 183), (255, 155, 72), (102, 213, 171)
+BG, PANEL, EDGE = (10, 16, 27), (20, 30, 47), (43, 58, 79)
+TEXT, MUTED, ACCENT, GREEN = (236, 242, 250), (151, 170, 193), (83, 218, 203), (126, 222, 164)
+TABS = ("Treino", "Recompensas", "PPO", "Sessões", "Simular")
 STATES = dict(
     starting="Iniciando",
     running="Treinando",
+    updating="Atualizando a rede PPO",
     paused="Pausado",
     evaluating="Avaliação reservada",
     saving="Salvando",
     completed="Concluído",
     stopped="Encerrado e salvo",
     error="Falha no treino",
+)
+PHASE_HELP = dict(
+    starting="Carregando os ambientes e os pesos iniciais…",
+    running="Coletando ações exploratórias. Use 1× para observar o movimento.",
+    updating="A coleta aguarda a atualização da rede. O campo fica parado nesta etapa.",
+    evaluating="Testando pesos em episódios reservados. A coleta aguarda a avaliação.",
+    saving="Gravando os pesos. A coleta continua após o salvamento.",
+    paused="Treino pausado por você. Continuar preserva o estado do ambiente.",
+    completed="Treino concluído. Avalie os pesos para observar a política aprendida.",
+    stopped="Sessão encerrada e pesos salvos. Você já pode editar os parâmetros.",
+    error="O processo encerrou com erro. Abra o diagnóstico para ver os detalhes.",
+)
+
+REWARD_ROWS = (
+    ("goal", "Gol marcado / sofrido", "+ gol a favor; − gol contra.", "all"),
+    ("progress", "Disco em direção ao gol", "Peso do progresso do disco até o gol da direita.", "score"),
+    ("approach", "Aproximar do disco", "Peso da redução da distância robô–disco.", "all"),
+    ("time_penalty", "Custo por passo", "Valor subtraído a cada passo de controle (30 Hz).", "all"),
+    ("energy_penalty", "Custo dos motores", "Subtrai peso × média das ações ao quadrado.", "all"),
+    ("reach_bonus", "Bônus de chegada", "Bônus ao atingir a distância de chegada.", "reach"),
+    (
+        "reach_distance",
+        "Distância de chegada · cm",
+        "Distância entre centros para concluir a chegada.",
+        "reach",
+    ),
 )
 
 
@@ -29,7 +58,7 @@ class TrainingPanel:
         self.config = config or TrainingConfig()
         self.worker = TrainingProcess(root)
         self.tab = "Treino"
-        self.scroll = {tab: 0 for tab in ("Treino", "PPO", "Sessões", "Simular")}
+        self.scroll = {tab: 0 for tab in TABS}
         self.max_scroll = 0
         self.handlers = []
         self.fields = []
@@ -46,6 +75,13 @@ class TrainingPanel:
         self.content = pygame.Rect(0, 0, 1, 1)
         self.y = 0
         self.screen = None
+        self.details = False
+        self.detail_scroll = 0
+        self.detail_lines = 0
+        self.detail_close = pygame.Rect(0, 0, 1, 1)
+        self.scroll_track = pygame.Rect(0, 0, 0, 0)
+        self.scroll_thumb = pygame.Rect(0, 0, 0, 0)
+        self.scroll_drag = None
 
     @property
     def live(self):
@@ -88,7 +124,7 @@ class TrainingPanel:
         if self.worker.config:
             self.preview_callback(self.worker.config)
             self.watch_live = True
-            self.notify("Ambiente real de coleta; exibição amostrada a até 10 quadros/s")
+            self.notify("Coleta real: até 30 quadros/s; em 1×, as poses são suavizadas na exibição")
 
     def evaluate(self, path=None, config=None):
         path = path or self.worker.checkpoint
@@ -104,12 +140,23 @@ class TrainingPanel:
             self.notify(exc, True)
 
     def toggle_pause(self):
-        self.worker.send(paused=not self.worker.control.get("paused", False))
+        self.control(paused=not self.worker.control.get("paused", False))
+
+    def control(self, **changes):
+        try:
+            self.worker.send(**changes)
+        except OSError as exc:
+            self.notify(exc, True)
 
     def save_config(self):
+        if not self.commit():
+            return
         path = self.root / "runs/training-config.json"
-        self.config.save(path)
-        self.notify("Configuração salva em runs/training-config.json")
+        try:
+            self.config.save(path)
+            self.notify("Configuração salva em runs/training-config.json")
+        except OSError as exc:
+            self.notify(exc, True)
 
     def load_file(self, path):
         if self.worker.active:
@@ -131,7 +178,7 @@ class TrainingPanel:
             return True
         key, parser = self.focus
         try:
-            value = parser(self.edit)
+            value = parser(self.edit.replace(",", ".") if parser is float else self.edit)
             if key.startswith("reward."):
                 changes = dict(reward=replace(self.config.reward, **{key.split(".")[1]: value}))
             else:
@@ -145,8 +192,34 @@ class TrainingPanel:
             return False
 
     def handle(self, event):
+        if self.details:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.details = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and self.detail_close.collidepoint(event.pos):
+                self.details = False
+            elif event.type == pygame.MOUSEWHEEL:
+                self.detail_scroll = max(0, min(self.detail_lines, self.detail_scroll - event.y * 3))
+            return event.type != pygame.QUIT
         if event.type == pygame.DROPFILE:
             self.load_file(event.file)
+            return True
+        if event.type == pygame.MOUSEBUTTONUP and self.scroll_drag is not None:
+            self.scroll_drag = None
+            return True
+        if event.type == pygame.MOUSEMOTION and self.scroll_drag is not None:
+            self.drag_scroll(event.pos[1])
+            return True
+        if (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and event.button == 1
+            and self.scroll_track.collidepoint(event.pos)
+        ):
+            self.scroll_drag = (
+                event.pos[1] - self.scroll_thumb.y
+                if self.scroll_thumb.collidepoint(event.pos)
+                else self.scroll_thumb.height / 2
+            )
+            self.drag_scroll(event.pos[1])
             return True
         if event.type == pygame.MOUSEWHEEL and self.content.collidepoint(pygame.mouse.get_pos()):
             self.scroll[self.tab] = max(0, min(self.max_scroll, self.scroll[self.tab] - event.y * 48))
@@ -173,10 +246,24 @@ class TrainingPanel:
                     return True
             if self.focus is not None and not self.commit():
                 return True
+        if event.type == pygame.KEYDOWN and self.focus is None:
+            if event.key in (pygame.K_PAGEDOWN, pygame.K_PAGEUP):
+                delta = self.content.height * (1 if event.key == pygame.K_PAGEDOWN else -1)
+                self.scroll[self.tab] = max(0, min(self.max_scroll, self.scroll[self.tab] + delta))
+                return True
         if event.type == pygame.KEYDOWN and self.focus is not None:
             if event.key == pygame.K_ESCAPE:
                 self.focus = None
-            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_TAB):
+            elif event.key == pygame.K_TAB:
+                keys = [key for _, key, _ in self.fields]
+                index = keys.index(self.focus[0]) if self.focus[0] in keys else -1
+                if self.commit() and keys:
+                    key = keys[(index + (-1 if event.mod & pygame.KMOD_SHIFT else 1)) % len(keys)]
+                    parser = next(parser for _, name, parser in self.fields if name == key)
+                    self.focus = (key, parser)
+                    value = self.value(key)
+                    self.edit, self.caret, self.select_all = str(value), len(str(value)), True
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.commit()
             elif event.key == pygame.K_a and event.mod & pygame.KMOD_CTRL:
                 self.select_all = True
@@ -208,20 +295,24 @@ class TrainingPanel:
         return False
 
     def text(self, value, x, y, size=14, color=TEXT, width=None):
-        value = str(value)
-        if width:
-            while len(value) > 2 and self.fonts[size].size(value)[0] > width:
-                value = value[:-2] + "…"
-        self.screen.blit(self.fonts[size].render(value, True, color), (int(x), int(y)))
+        clip = self.screen.get_clip()
+        if y >= clip.bottom or y + self.fonts[size].get_linesize() <= clip.top:
+            return
+        value = fit_text(self.fonts[size], str(value), width)
+        self.screen.blit(render_text(self.fonts[size], value, color), (int(x), int(y)))
 
     def button(self, label, rect, callback, active=False, enabled=True):
         rect = pygame.Rect(rect)
-        color = ACCENT if active else (37, 54, 73) if enabled else (26, 37, 51)
+        visible = self.screen.get_clip().clip(rect)
+        if not visible.width or not visible.height:
+            return
+        hover = enabled and rect.collidepoint(pygame.mouse.get_pos())
+        color = ACCENT if active else (49, 70, 91) if hover else (33, 48, 68) if enabled else (25, 35, 50)
         pygame.draw.rect(self.screen, color, rect, border_radius=7)
-        surf = self.fonts[12].render(label, True, BG if active else TEXT if enabled else MUTED)
-        if surf.get_width() > rect.width - 10:
-            label = label[: max(2, int(len(label) * (rect.width - 16) / surf.get_width()))] + "…"
-            surf = self.fonts[12].render(label, True, BG if active else TEXT)
+        if not active:
+            pygame.draw.rect(self.screen, EDGE, rect, 1, border_radius=7)
+        label = fit_text(self.fonts[12], label, rect.width - 10)
+        surf = render_text(self.fonts[12], label, BG if active else TEXT if enabled else MUTED)
         self.screen.blit(surf, surf.get_rect(center=rect.center))
         visible = self.screen.get_clip().clip(rect)
         if enabled and visible.width and visible.height:
@@ -232,28 +323,50 @@ class TrainingPanel:
         self.text(label.upper(), self.content.x, self.y, 12, ACCENT)
         self.y += 25
 
+    def paragraph(self, value, color=MUTED, width=None):
+        width = width or self.content.width
+        for line in wrap_text(self.fonts[12], str(value), width):
+            self.text(line, self.content.x, self.y, 12, color)
+            self.y += 19
+        self.y += 5
+
+    def value(self, key):
+        return (
+            getattr(self.config.reward, key.split(".")[1])
+            if key.startswith("reward.")
+            else getattr(self.config, key)
+        )
+
     def field(self, label, key, parser=float, x=None, width=None, advance=True):
         x = self.content.x if x is None else x
         width = self.content.width if width is None else width
         self.text(label, x, self.y, 12, MUTED, width)
         rect = pygame.Rect(x, self.y + 20, width, 31)
+        self.input(key, rect, parser)
+        if advance:
+            self.y += 61
+
+    def input(self, key, rect, parser=float):
+        if not self.screen.get_clip().colliderect(rect):
+            return
         focused = self.focus is not None and self.focus[0] == key
         pygame.draw.rect(self.screen, (12, 23, 37), rect, border_radius=6)
         pygame.draw.rect(self.screen, ACCENT if focused else EDGE, rect, 1, border_radius=6)
-        value = (
-            getattr(self.config.reward, key.split(".")[1])
-            if key.startswith("reward.")
-            else getattr(self.config, key)
-        )
+        value = self.value(key)
         display = self.edit if focused else f"{value:g}" if isinstance(value, float) else str(value)
         if focused and self.select_all:
             pygame.draw.rect(self.screen, (53, 78, 98), rect.inflate(-8, -6), border_radius=3)
-        self.text(display, x + 9, rect.y + 6, 14, TEXT if not self.worker.active else MUTED, width - 18)
+        old_clip = self.screen.get_clip()
+        self.screen.set_clip(old_clip.clip(rect.inflate(-10, -2)))
+        offset = max(0, self.fonts[14].size(display[: self.caret])[0] - rect.width + 24) if focused else 0
+        self.text(display, rect.x + 9 - offset, rect.y + 6, 14, TEXT if not self.worker.active else MUTED)
+        if focused and not self.select_all and pygame.time.get_ticks() % 1000 < 550:
+            cx = rect.x + 9 - offset + self.fonts[14].size(display[: self.caret])[0]
+            pygame.draw.line(self.screen, ACCENT, (cx, rect.y + 6), (cx, rect.bottom - 6))
+        self.screen.set_clip(old_clip)
         visible = self.screen.get_clip().clip(rect)
         if not self.worker.active and visible.height and visible.width:
             self.fields.append((visible, key, parser))
-        if advance:
-            self.y += 61
 
     def pair(self, first, second):
         width = (self.content.width - 12) // 2
@@ -310,7 +423,30 @@ class TrainingPanel:
                 active=chosen,
                 enabled=not self.worker.active,
             )
-        self.y += 116
+        self.y += math.ceil(len(PRESET_LABELS) / 2) * 36 + 8
+        self.section("Seu objetivo")
+        self.paragraph(
+            "Buscar o disco e marcar no gol da direita. Aproximar sozinho não conclui o episódio."
+            if self.config.objective == "score"
+            else "Chegar perto do disco, dentro da distância configurada. Não exige gol.",
+            TEXT,
+        )
+        self.text(
+            f"{self.config.robots_per_team} azul · {self.config.opponent_robots} vermelho · {self.config.episode_seconds:g}s por episódio",
+            self.content.x,
+            self.y,
+            12,
+            GREEN,
+        )
+        self.y += 27
+        self.paragraph(
+            "Recompensas e PPO têm abas próprias. Ajuste antes de iniciar; Enter aplica, Tab avança."
+        )
+        if self.config.scenario == "solo_curriculum":
+            self.paragraph(
+                "Currículo solo: finalizar perto do gol → conduzir → buscar de qualquer direção e marcar. Só avança após demonstrar sucesso; os pesos de recompensa permanecem iguais.",
+                GREEN,
+            )
         self.field("Nome da sessão", "name", str)
         self.pair(("Passos de ambiente", "steps", int), ("Ambientes paralelos", "envs", int))
         self.pair(("Duração do episódio (s)", "episode_seconds", float), ("Seed", "seed", int))
@@ -333,7 +469,19 @@ class TrainingPanel:
         self.choice(
             "Posições iniciais",
             "scenario",
-            ["faceoff", "solo", "shooting", "defending", "random", "curriculum"],
+            [
+                "faceoff",
+                "solo",
+                "solo_finish",
+                "solo_carry",
+                "solo_search",
+                "duel",
+                "shooting",
+                "defending",
+                "random",
+                "curriculum",
+                "solo_curriculum",
+            ],
             dict(
                 faceoff="Face-off",
                 solo="Disco e robô em posições variadas",
@@ -341,6 +489,11 @@ class TrainingPanel:
                 defending="Disco vindo para defesa",
                 random="Times em posições variadas",
                 curriculum="Currículo progressivo",
+                solo_curriculum="Solo · currículo por sucesso",
+                solo_finish="Solo · finalizar perto do gol",
+                solo_carry="Solo · conduzir até o gol",
+                solo_search="Solo · buscar em todas as direções",
+                duel="1v1 · saídas e situações variadas",
             ),
             preview=True,
         )
@@ -360,6 +513,12 @@ class TrainingPanel:
             ),
         )
         self.section("Dificuldade")
+        if self.config.scenario == "solo_curriculum":
+            self.field("Taxa de sucesso para avançar (0 a 1)", "curriculum_success_threshold")
+            self.pair(
+                ("Mínimo de episódios na etapa", "curriculum_min_episodes", int),
+                ("Janela de episódios", "curriculum_window", int),
+            )
         self.field("Distância inicial máxima no exercício solo (cm)", "spawn_distance")
         self.choice(
             "Orientação inicial no solo",
@@ -383,7 +542,104 @@ class TrainingPanel:
         )
         self.y += 42
 
+    def rewards(self):
+        self.section("Tabela de recompensas")
+        self.paragraph(
+            "Clique no valor para editar. Enter aplica; vírgula ou ponto são aceitos. Os custos são subtraídos automaticamente."
+        )
+        self.paragraph(
+            "Os pesos ficam fixos na sessão. A recompensa calculada varia a cada passo; o acumulado aparece abaixo de cada componente durante a coleta."
+        )
+        self.paragraph(
+            "Objetivo: buscar e marcar. O bônus e a distância de chegada não encerram este exercício."
+            if self.config.objective == "score"
+            else "Objetivo: ir ao disco. O peso de progresso até o gol não é usado neste exercício.",
+            GREEN,
+        )
+        self.text("COMPONENTE / EFEITO", self.content.x + 12, self.y, 12, MUTED)
+        self.text("PESO", self.content.right - 108, self.y, 12, MUTED)
+        self.y += 25
+        for index, (key, label, description, task) in enumerate(REWARD_ROWS):
+            row = pygame.Rect(self.content.x, self.y, self.content.width, 86)
+            pygame.draw.rect(
+                self.screen, (25, 39, 58) if index % 2 == 0 else (17, 28, 44), row, border_radius=8
+            )
+            relevant = task == "all" or task == self.config.objective
+            color = TEXT if relevant else MUTED
+            self.text(label, row.x + 12, row.y + 10, 14, color, row.width - 144)
+            self.text(description, row.x + 12, row.y + 39, 12, MUTED, row.width - 24)
+            note = (
+                "Ativo neste exercício"
+                if relevant
+                else "Só no objetivo: " + ("marcar gol" if task == "score" else "ir ao disco")
+            )
+            if key != "reach_distance" and self.live and self.worker.config == self.config:
+                total = self.worker.frame.get("episode_reward_components", {}).get(key)
+                if total is not None:
+                    note += f" · neste episódio: {total:+.4f}"
+            self.text(note, row.x + 12, row.y + 60, 12, GREEN if relevant else MUTED)
+            self.input("reward." + key, pygame.Rect(row.right - 119, row.y + 7, 107, 31))
+            self.y += 93
+        self.section("Como interpretar")
+        self.paragraph(
+            "Progresso e aproximação usam diferenças de potencial com o gamma do PPO; estes pesos não são bônus fixos por contato. As penalidades são aplicadas por passo, e o esforço varia com a ação."
+        )
+        self.paragraph(
+            f"Em {self.config.episode_seconds:g}s, o custo de tempo soma até {self.config.reward.time_penalty * self.config.episode_steps:g} por robô. A taxa de controle permanece em 30 Hz."
+        )
+        half = (self.content.width - 8) / 2
+        self.button(
+            "Restaurar pesos padrão",
+            (self.content.x, self.y, half, 32),
+            self.reset_rewards,
+            enabled=not self.worker.active,
+        )
+        self.button(
+            "Salvar configuração",
+            (self.content.x + half + 8, self.y, half, 32),
+            self.save_config,
+            enabled=not self.worker.active,
+        )
+        self.y += 44
+
+    def reset_rewards(self):
+        preset = "solo_reach" if self.config.objective == "reach" else "solo_goal"
+        self._apply(reward=preset_config(preset).reward)
+
     def advanced(self):
+        self.section("Hiperparâmetros PPO")
+        self.paragraph(
+            "Os valores abaixo são os usados ao iniciar a sessão. Durante o treino, ficam disponíveis para consulta."
+        )
+        self.pair(
+            ("Learning rate · taxa de aprendizado", "learning_rate", float),
+            ("Entropia · exploração", "entropy_coef", float),
+        )
+        self.pair(
+            ("Gamma · desconto futuro", "gamma", float), ("Lambda · estimativa GAE", "gae_lambda", float)
+        )
+        self.pair(
+            ("Clipping · limite PPO", "clip_eps", float), ("KL alvo · limite de mudança", "target_kl", float)
+        )
+        self.section("Coleta e otimização")
+        self.pair(
+            ("Passos por ambiente / atualização", "rollout", int),
+            ("Amostras por minibatch", "batch_size", int),
+        )
+        self.pair(
+            ("Épocas por atualização", "epochs", int), ("Snapshot a cada (updates)", "snapshot_every", int)
+        )
+        samples = self.config.rollout * self.config.envs * self.config.robots_per_team
+        self.paragraph(
+            f"Cada lote completo: {self.config.rollout} passos × {self.config.envs} ambientes × {self.config.robots_per_team} robôs = {samples:,} amostras. A coleta pausa enquanto a rede é atualizada."
+        )
+        self.section("Avaliação reservada")
+        self.pair(
+            ("Avaliar a cada (updates)", "eval_every", int), ("Episódios por avaliação", "eval_episodes", int)
+        )
+        self.paragraph(
+            "Usa ações determinísticas e seeds reservadas. Durante essa etapa, o campo da coleta permanece parado; o estado aparece abaixo da arena."
+        )
         if self.worker.records:
             self.section("Diagnóstico da atualização")
             record = self.worker.records[-1]
@@ -434,26 +690,19 @@ class TrainingPanel:
                 resume="Retomar pesos e otimizador",
             ),
         )
-        self.section("PPO")
-        self.pair(("Learning rate", "learning_rate", float), ("Entropia", "entropy_coef", float))
-        self.pair(("Gamma", "gamma", float), ("Lambda GAE", "gae_lambda", float))
-        self.pair(("Clipping", "clip_eps", float), ("KL alvo", "target_kl", float))
-        self.pair(("Coleta por ambiente", "rollout", int), ("Minibatch", "batch_size", int))
-        self.pair(("Épocas por atualização", "epochs", int), ("Novo snapshot a cada", "snapshot_every", int))
-        self.pair(
-            ("Avaliar a cada (updates)", "eval_every", int), ("Episódios de avaliação", "eval_episodes", int)
-        )
-        self.section("Recompensas")
-        self.pair(("Gol", "reward.goal", float), ("Progresso do disco", "reward.progress", float))
-        self.pair(
-            ("Aproximação", "reward.approach", float), ("Bônus de chegada", "reward.reach_bonus", float)
-        )
-        self.pair(
-            ("Custo por passo", "reward.time_penalty", float),
-            ("Custo de esforço", "reward.energy_penalty", float),
-        )
-        self.field("Sucesso ao chegar: distância entre centros (cm)", "reward.reach_distance")
         self.field("Força do bot adversário (0 a 1)", "opponent_difficulty")
+        if self.config.opponent_robots:
+            self.section("Adversários e avaliação")
+            self.pair(
+                ("Versões no pool self-play", "selfplay_pool_size", int),
+                ("Chance da política inicial (0 a 1)", "selfplay_anchor_probability", float),
+            )
+            self.choice(
+                "Avaliar contra bot e política inicial",
+                "evaluation_suite",
+                [True, False],
+                {True: "Suíte fixa · saídas e posições variadas", False: "Somente bot tático"},
+            )
 
     def session_action(self, row, action):
         if action == "evaluate":
@@ -543,16 +792,26 @@ class TrainingPanel:
         self.text("BANCADA DE TREINO", x, rect.y + 17, 14, ACCENT)
         phase = STATES.get(self.worker.status.get("state"), "Pronto para configurar")
         self.text(phase, x, rect.y + 43, 18, GREEN if self.worker.active else TEXT, width)
-        tabs = ["Treino", "PPO", "Sessões", "Simular"]
+        tabs = TABS
         for i, tab in enumerate(tabs):
             self.button(
                 tab,
-                (x + i * (width / 4 + 1), rect.y + 77, width / 4 - 4, 30),
+                (x + i * width / len(tabs), rect.y + 77, width / len(tabs) - 4, 30),
                 lambda v=tab: self._tab(v),
                 self.tab == tab,
             )
         bottom = rect.bottom - 204
-        self.content = pygame.Rect(x, rect.y + 120, width - 8, max(70, bottom - rect.y - 135))
+        self.text(
+            "Em execução · encerre para editar"
+            if self.worker.active
+            else "Clique para editar · Enter aplica · role para mais",
+            x,
+            rect.y + 116,
+            12,
+            MUTED,
+            width,
+        )
+        self.content = pygame.Rect(x, rect.y + 142, width - 8, max(70, bottom - rect.y - 155))
         old_clip = screen.get_clip()
         screen.set_clip(self.content)
         self.y = self.content.y - self.scroll[self.tab]
@@ -560,10 +819,13 @@ class TrainingPanel:
             self.basic()
         elif self.tab == "PPO":
             self.advanced()
+        elif self.tab == "Recompensas":
+            self.rewards()
         elif self.tab == "Sessões":
             self.history()
         self.max_scroll = max(0, self.y + self.scroll[self.tab] - self.content.bottom)
         screen.set_clip(old_clip)
+        self.scroll_track = pygame.Rect(0, 0, 0, 0)
         if self.max_scroll:
             track = pygame.Rect(rect.right - 11, self.content.y, 3, self.content.height)
             pygame.draw.rect(screen, EDGE, track)
@@ -575,6 +837,8 @@ class TrainingPanel:
                 height,
             )
             pygame.draw.rect(screen, MUTED, thumb)
+            self.scroll_track = track.inflate(12, 0)
+            self.scroll_thumb = thumb
         pygame.draw.line(screen, EDGE, (x, bottom - 7), (rect.right - 16, bottom - 7))
         state = self.worker.status
         finished = max(
@@ -609,7 +873,7 @@ class TrainingPanel:
             self.button(
                 "Salvar e encerrar",
                 (x + half + gap, bottom + 63, half, 31),
-                lambda: self.worker.send(stop=True, paused=False),
+                lambda: self.control(stop=True, paused=False),
             )
         else:
             self.button("Pré-visualizar exercício", (x, bottom + 63, half, 31), self.preview)
@@ -635,29 +899,124 @@ class TrainingPanel:
                 lambda v=speed: self._speed(v),
                 (self.worker.control.get("speed", self.config.speed) == speed),
             )
-        message = (
-            self.worker.status.get("error", self.message)
-            if self.worker.status.get("state") == "error"
-            else self.message
-        )
-        self.text(
-            str(message).splitlines()[0],
-            x,
-            bottom + 177,
-            12,
-            (255, 133, 121) if self.error or state.get("state") == "error" else MUTED,
-            width,
-        )
+        if self.error or state.get("state") == "error":
+            self.button("Erro · abrir diagnóstico completo", (x, bottom + 171, width, 26), self.open_details)
+        else:
+            self.text(self.message, x, bottom + 177, 12, MUTED, width)
         return self.content
 
     def _tab(self, value):
         self.tab = value
+        self.scroll_drag = None
+
+    def drag_scroll(self, y):
+        travel = self.scroll_track.height - self.scroll_thumb.height
+        fraction = (y - self.scroll_drag - self.scroll_track.y) / max(1, travel)
+        self.scroll[self.tab] = max(0, min(self.max_scroll, fraction * self.max_scroll))
 
     def _speed(self, value):
         if self.worker.active:
-            self.worker.send(speed=value)
+            self.control(speed=value)
         else:
             self.config = replace(self.config, speed=value)
+
+    def open_details(self):
+        self.details, self.detail_scroll = True, 0
+
+    def draw_details(self, screen):
+        if not self.details:
+            return
+        self.screen = screen
+        shade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 190))
+        screen.blit(shade, (0, 0))
+        rect = pygame.Rect(0, 0, min(1050, screen.get_width() - 80), min(650, screen.get_height() - 80))
+        rect.center = screen.get_rect().center
+        pygame.draw.rect(screen, PANEL, rect, border_radius=18)
+        pygame.draw.rect(screen, EDGE, rect, 1, border_radius=18)
+        self.text("Diagnóstico da sessão", rect.x + 24, rect.y + 22, 22)
+        self.text(
+            "Role para ler · os detalhes também ficam em output.log e status.json",
+            rect.x + 24,
+            rect.y + 58,
+            12,
+            MUTED,
+        )
+        self.detail_close = pygame.Rect(rect.right - 104, rect.y + 20, 80, 32)
+        self.button("Fechar [Esc]", self.detail_close, lambda: None)
+        state = self.worker.status
+        body = "\n\n".join(
+            str(part)
+            for part in (
+                state.get("error", self.message),
+                state.get("detail", ""),
+                f"Pasta da sessão: {self.worker.directory}" if self.worker.directory else "",
+                f"Último checkpoint: {self.worker.checkpoint}"
+                if self.worker.checkpoint
+                else "Ainda não há checkpoint salvo.",
+                "Você pode usar Sessões → Retomar para continuar a partir dos últimos pesos salvos.",
+            )
+            if part
+        )
+        viewport = pygame.Rect(rect.x + 24, rect.y + 93, rect.width - 48, rect.height - 117)
+        lines = []
+        for original in body.splitlines():
+            line = ""
+            for char in original:
+                if self.fonts[14].size(line + char)[0] > viewport.width - 12:
+                    lines.append(line)
+                    line = ""
+                line += char
+            lines.append(line)
+        visible = viewport.height // 22
+        self.detail_lines = max(0, len(lines) - visible)
+        self.detail_scroll = min(self.detail_scroll, self.detail_lines)
+        screen.set_clip(viewport)
+        for i, line in enumerate(lines[self.detail_scroll : self.detail_scroll + visible]):
+            self.text(line, viewport.x, viewport.y + i * 22, 14, TEXT)
+        screen.set_clip(None)
+
+    def draw_health(self, screen, rect, frame, fps):
+        self.screen = screen
+        pygame.draw.rect(screen, PANEL, rect, border_radius=12)
+        live = self.watch_live
+        waiting = live and self.worker.status.get("state") != "running"
+        stale = live and self.worker.active and not waiting and self.worker.frame_age > 1
+        speed = (frame.get("robot_speeds") or [0])[0]
+        cards = (
+            ("JANELA", f"{fps:.0f} FPS", "desenho da interface"),
+            (
+                "QUADROS DO TREINO",
+                "em espera" if waiting else f"{self.worker.frame_hz:.0f} Hz" if live else "prévia",
+                "sem novos quadros" if stale else "até 30 Hz + suavização",
+            ),
+            (
+                "PASSOS DE TREINO",
+                f"{frame.get('transitions_per_second', 0):,.0f}/s" if live else "—",
+                "média · todos os ambientes",
+            ),
+            ("ROBÔ AZUL 0", f"{speed:.1f} cm/s", f"disco a {frame.get('distance_to_puck', 0):.1f} cm"),
+        )
+        width = (rect.width - 24) / 4
+        for i, (label, value, note) in enumerate(cards):
+            x = rect.x + 12 + i * width
+            if i:
+                pygame.draw.line(screen, EDGE, (x - 6, rect.y + 12), (x - 6, rect.y + 65))
+            self.text(label, x, rect.y + 9, 12, MUTED, width - 12)
+            self.text(value, x, rect.y + 28, 18, ACCENT if i < 3 else GREEN, width - 12)
+            self.text(note, x, rect.y + 52, 12, MUTED, width - 12)
+        phase = self.worker.status.get("state")
+        help_text = (
+            PHASE_HELP.get(phase, "Prévia com bot tático. Inicie o treino para acompanhar o PPO.")
+            if live
+            else "Prévia / avaliação independente. Os controles de treino ficam no painel à direita."
+        )
+        if stale:
+            help_text = "Aguardando novos quadros há mais de 1s. Confira o estado da sessão e o diagnóstico."
+        curriculum = self.worker.status.get("curriculum")
+        if live and phase == "running" and curriculum:
+            help_text = f"{curriculum['label']} · sucesso {curriculum['success_rate']:.0%} / meta {curriculum['threshold']:.0%} · {curriculum['recent_count']} episódios (mín. {curriculum['minimum']})"
+        self.text(help_text, rect.x + 12, rect.y + 78, 12, MUTED, rect.width - 24)
 
     def draw_metrics(self, screen, rect):
         self.screen = screen

@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 from vision.state import OBS_DIM, OBSERVATION_VERSION
+from core.file_io import atomic_destination
 
 
 def compute_gae(rewards, values, next_values, terminated, truncated, gamma=0.995, gae_lambda=0.95):
@@ -272,9 +273,8 @@ class HockeyPPOTrainer:
             ),
             metadata=metadata or {},
         )
-        temp = path.with_suffix(path.suffix + ".tmp")
-        torch.save(data, temp)
-        temp.replace(path)
+        with atomic_destination(path) as temp:
+            torch.save(data, temp)
 
     def load(self, path, resume=False):
         ckpt = torch.load(path, map_location=self.device, weights_only=True)

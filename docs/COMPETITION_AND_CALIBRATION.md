@@ -12,6 +12,8 @@ Referência dos perfis Micro: [RoboCore Hockey Rules, revisão 15/01/2024](https
 | Motores e pneus | Reposição indicada pelo fabricante: motor 6 V / 266 rpm e pneus NEO 60 × 20 mm; resposta real, atritos e assimetria ainda exigem medição |
 | Rádio e câmera | Frequências, atrasos e perdas são hipóteses configuráveis; exigem medição no equipamento |
 
+O perfil adicional `micro-practice` mantém a área de jogo de 300 × 150 cm e usa recuos de gol com 26 cm de profundidade estimada, inspirados na referência de bancada. Essa profundidade não é uma medida regulamentar nem uma medição da foto. As medidas precisam ser conferidas na pista construída; veja [arena e treino solo](ARENA_AND_SOLO_TRAINING.md).
+
 Uma regra define uma restrição; um parâmetro medido descreve um equipamento. Não use o limite de peso como comprovação de que o robô pesa exatamente esse valor. Confira ainda envolvimento e abertura da pá e se o formato de controle proposto é aceito pela organização.
 
 O hardware alvo é o [HockeyBot comercial](HOCKEYBOT_STOCK.md). A categoria comercial HockeyBot e a categoria Micro não devem ser presumidas equivalentes. O perfil Micro descreve uma arena escolhida para simulação; confirme o campo e as regras específicos da edição em que os robôs prontos serão usados.

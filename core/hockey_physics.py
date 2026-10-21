@@ -17,6 +17,7 @@ from core.geometry import (
     footprint_vertices,
 )
 from core.actuators import action_to_pwm, pwm_to_normalized
+from core.arena_geometry import arena_wall_segments
 
 
 @dataclass
@@ -233,33 +234,11 @@ class HockeyPhysicsEngine:
         self.ble_latency_ms = 0.0
 
     def _build_walls(self):
-        a = self.arena
-        hl, hw, rc = a.half_length, a.half_width, a.corner_radius
-
-        def wall(p, q):
+        for p, q in arena_wall_segments(self.arena):
             s = pymunk.Segment(self.space.static_body, p, q, 0.15)
             s.elasticity = math.sqrt(self.simulation.restitution)
             s.friction = 0.2
             self.space.add(s)
-
-        wall((-hl + rc, hw), (hl - rc, hw))
-        wall((-hl + rc, -hw), (hl - rc, -hw))
-        for sx in [-1, 1]:
-            wall((sx * hl, -hw + rc), (sx * hl, -a.goal_width / 2))
-            wall((sx * hl, a.goal_width / 2), (sx * hl, hw - rc))
-            for sy in [-1, 1]:
-                wall((sx * hl, sy * a.goal_width / 2), (sx * (hl + a.goal_depth), sy * a.goal_width / 2))
-            wall((sx * (hl + a.goal_depth), -a.goal_width / 2), (sx * (hl + a.goal_depth), a.goal_width / 2))
-        for cx, cy, start in [
-            (hl - rc, hw - rc, 0),
-            (-hl + rc, hw - rc, 90),
-            (-hl + rc, -hw + rc, 180),
-            (hl - rc, -hw + rc, 270),
-        ]:
-            angles = np.linspace(math.radians(start), math.radians(start + 90), 13)
-            pts = [(cx + rc * math.cos(t), cy + rc * math.sin(t)) for t in angles]
-            for p, q in zip(pts, pts[1:]):
-                wall(p, q)
 
     def _puck_contact(self, arbiter, space, data):
         for r in self.all_robots:

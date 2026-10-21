@@ -12,15 +12,21 @@ import traceback
 import numpy as np
 import torch
 from core.constants import RobotConfig
+from core.file_io import atomic_destination, sharing_violation
 from rl.ppo_trainer import HockeyPPOTrainer
+from rl.curriculum import SoloCurriculum, SOLO_STAGES
 
 
-def atomic_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False), encoding="utf8")
-    temp.replace(path)
+def atomic_json(path, data, best_effort=False):
+    try:
+        with atomic_destination(path, attempts=1 if best_effort else 7) as temp:
+            temp.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False), encoding="utf8")
+        return True
+    except OSError as exc:
+        # Telemetry can drop a frame; it must never abort PPO because a reader holds it.
+        if best_effort and sharing_violation(exc):
+            return False
+        raise
 
 
 def read_json(path, default=None):
@@ -31,6 +37,9 @@ def read_json(path, default=None):
 
 
 def curriculum_stage(config, progress):
+    if config.scenario == "solo_curriculum":
+        # Evaluation always uses full search, even before the training advances.
+        return SOLO_STAGES[-1] if progress >= 1 else SOLO_STAGES[0]
     if config.scenario != "curriculum":
         return config.scenario
     return (
@@ -53,18 +62,32 @@ def frame_from_env(env, **extra):
         score_blue=e.score_blue,
         score_red=e.score_red,
         actions=env.previous_actions.tolist(),
+        robot_speeds=[math.hypot(r.vx, r.vy) for r in e.blue_robots],
+        distance_to_puck=min(math.hypot(r.x - e.puck.x, r.y - e.puck.y) for r in e.blue_robots),
+        reward_components=dict(getattr(env, "last_reward_components", {})),
+        episode_reward_components=dict(getattr(env, "episode_reward_components", {})),
         tracking=[(r.x, r.y, r.vx, r.vy) for r in env.state.robots.values() if r.valid(env.state.timestamp)],
         **extra,
     )
 
 
-def evaluate_config(trainer, config, episodes=None, seed=10000, should_stop=lambda: False):
+def evaluate_config(
+    trainer,
+    config,
+    episodes=None,
+    seed=10000,
+    should_stop=lambda: False,
+    opponent_net=None,
+    opponent_name=None,
+    scenarios=None,
+):
     """Reserved seeds, task-matched layout; adversary is a fixed tactical bot."""
     records = []
     for i in range(episodes or config.eval_episodes):
         if should_stop():
             break
-        env = config.make_env(curriculum_stage(config, 1))
+        scenario = scenarios[i % len(scenarios)] if scenarios else curriculum_stage(config, 1)
+        env = config.make_env(scenario)
         obs, _ = env.reset(seed=seed + i)
         total = 0.0
         for step in range(config.episode_steps):
@@ -72,6 +95,10 @@ def evaluate_config(trainer, config, episodes=None, seed=10000, should_stop=lamb
                 break
             actions, _, _ = trainer.select_action(obs, deterministic=True)
             red = np.zeros((config.opponent_robots, 2)) if config.opponent in ("none", "zero") else None
+            if opponent_net is not None:
+                with torch.no_grad():
+                    distribution, _ = opponent_net.distribution(torch.from_numpy(env.get_team_obs(1)))
+                    red = distribution.mean.tanh().numpy()
             obs, reward, term, trunc, info = env.step(actions, red)
             total += reward
             if term or trunc:
@@ -83,6 +110,7 @@ def evaluate_config(trainer, config, episodes=None, seed=10000, should_stop=lamb
                         goal=info["goal_scored"],
                         steps=step + 1,
                         reward=total,
+                        scenario=scenario,
                     )
                 )
                 break
@@ -90,23 +118,59 @@ def evaluate_config(trainer, config, episodes=None, seed=10000, should_stop=lamb
     losses = sum(r["goal"] == -1 for r in records)
     return dict(
         episodes=len(records),
+        scenario="+".join(scenarios) if scenarios else curriculum_stage(config, 1),
+        objective=config.objective,
+        robots_per_team=config.robots_per_team,
+        opponent_robots=config.opponent_robots,
         wins=wins,
         losses=losses,
         timeouts=sum(r["result"] == "timeout" for r in records),
         win_rate=wins / max(1, len(records)),
         success_rate=wins / max(1, len(records)),
+        point_score=(wins + 0.5 * sum(r["result"] == "timeout" for r in records)) / max(1, len(records)),
         mean_reward=float(np.mean([r["reward"] for r in records])) if records else 0.0,
-        opponent="none"
-        if config.opponent_robots == 0
-        else "zero"
-        if config.opponent == "zero"
-        else "heuristic",
+        opponent=opponent_name
+        or ("none" if config.opponent_robots == 0 else "zero" if config.opponent == "zero" else "heuristic"),
         records=records,
     )
 
 
+def evaluate_opponent_suite(trainer, config, anchor, should_stop=lambda: False):
+    """Fixed opponents and layouts provide a stable test outside the changing league."""
+    results = {}
+    for name, net in (("heuristic", None), ("initial_policy", anchor)):
+        if should_stop():
+            break
+        results[name] = evaluate_config(
+            trainer,
+            config,
+            should_stop=should_stop,
+            opponent_net=net,
+            opponent_name=name,
+            scenarios=("faceoff", "random"),
+        )
+    episodes = sum(row["episodes"] for row in results.values())
+    wins = sum(row["wins"] for row in results.values())
+    losses = sum(row["losses"] for row in results.values())
+    timeouts = sum(row["timeouts"] for row in results.values())
+    complete = len(results) == 2 and all(row["episodes"] == config.eval_episodes for row in results.values())
+    return dict(
+        episodes=episodes,
+        wins=wins,
+        losses=losses,
+        timeouts=timeouts,
+        success_rate=wins / max(1, episodes),
+        win_rate=wins / max(1, episodes),
+        point_score=(wins + timeouts * 0.5) / max(1, episodes),
+        complete=complete,
+        opponent="fixed_suite",
+        scenario="faceoff+random",
+        by_opponent=results,
+    )
+
+
 class TrainingSession:
-    def __init__(self, config, directory, save_path=None):
+    def __init__(self, config, directory, save_path=None, reporter=None, publish_live=True, deadline=None):
         self.config = config
         self.directory = Path(directory)
         self.save_path = Path(save_path) if save_path else self.directory / "latest.pt"
@@ -114,7 +178,7 @@ class TrainingSession:
         self.paused = False
         self.speed = config.speed
         self.finished = 0
-        self.started = time.monotonic()
+        self.started = time.perf_counter()
         self.last_live = self.last_control = -math.inf
         self.phase = "starting"
         self.episode_records = deque(maxlen=100)
@@ -122,12 +186,26 @@ class TrainingSession:
         self.episode_number = 1
         self.best = -math.inf
         self.last_evaluation = None
+        self.dropped_frames = 0
+        self.reporter = reporter
+        self.publish_live = publish_live
+        self.last_progress = -math.inf
+        self.updates = 0
+        self.curriculum = SoloCurriculum(config) if config.scenario == "solo_curriculum" else None
+        self.deadline = deadline
+        self.stop_reason = None
+        self.selfplay_pool = None
+        self.selfplay_anchor = None
 
     def control(self):
-        now = time.monotonic()
+        now = time.perf_counter()
         if now - self.last_control >= 0.08:
             data = read_json(self.directory / "control.json", {})
+            if data.get("stop") and not self.stop_requested:
+                self.stop_reason = "requested"
             self.stop_requested |= bool(data.get("stop", False))
+            if self.deadline is not None and time.time() >= self.deadline and not self.stop_requested:
+                self.stop_requested, self.stop_reason = True, "time_limit"
             self.paused = bool(data.get("paused", False))
             speed = data.get("speed", self.speed)
             if isinstance(speed, (int, float)) and math.isfinite(speed) and 0 <= speed <= 1000:
@@ -137,23 +215,40 @@ class TrainingSession:
 
     def status(self, phase, **extra):
         self.phase = phase
-        atomic_json(
-            self.directory / "status.json",
-            dict(
-                state=phase,
-                session_transitions=self.finished,
-                target=self.config.effective_steps,
-                wall_seconds=time.monotonic() - self.started,
-                updated_at=time.time(),
-                checkpoint=str(self.save_path),
-                **extra,
-            ),
+        self.updates = extra.pop("updates", self.updates)
+        data = dict(
+            state=phase,
+            session_transitions=self.finished,
+            target=self.config.effective_steps,
+            wall_seconds=time.perf_counter() - self.started,
+            updated_at=time.time(),
+            checkpoint=str(self.save_path),
+            dropped_frames=self.dropped_frames,
+            updates=self.updates,
+            curriculum=self.curriculum.state() if self.curriculum else None,
+            deadline=self.deadline,
+            stop_reason=self.stop_reason,
+            **extra,
         )
+        atomic_json(self.directory / "status.json", data)
+        if self.reporter:
+            self.reporter("progress", data)
+            if phase == "error":
+                self.reporter("error", data)
+
+    def progress(self):
+        if time.perf_counter() - self.last_progress >= 1:
+            self.status(self.phase)
+            self.last_progress = time.perf_counter()
 
     def publish(self, env, trainer, force=False, **extra):
-        now = time.monotonic()
-        if force or now - self.last_live >= 0.10:
-            atomic_json(
+        if not self.publish_live:
+            return
+        now = time.perf_counter()
+        # At 1x, each physical control step is already paced to 30 Hz. Publish it
+        # directly so sub-millisecond inference jitter cannot skip alternate steps.
+        if force or self.speed == 1 or now - self.last_live >= 1 / 30:
+            published = atomic_json(
                 self.directory / "live.json",
                 frame_from_env(
                     env,
@@ -162,9 +257,14 @@ class TrainingSession:
                     state=self.phase,
                     episode=self.episode_number,
                     timestamp=time.time(),
+                    speed=self.speed,
+                    transitions_per_second=self.finished / max(0.001, now - self.started),
+                    curriculum=self.curriculum.state() if self.curriculum else None,
                     **extra,
                 ),
+                best_effort=True,
             )
+            self.dropped_frames += int(not published)
             self.last_live = now
 
     def metadata(self, env, trainer):
@@ -175,14 +275,22 @@ class TrainingSession:
             stage=env.scenario,
             environment_transitions=trainer.environment_steps,
             session_transitions=self.finished,
-            wall_seconds=time.monotonic() - self.started,
+            wall_seconds=time.perf_counter() - self.started,
             opponent=self.config.opponent,
+            curriculum=self.curriculum.state() if self.curriculum else None,
+            best_evaluation_score=self.best if math.isfinite(self.best) else None,
+            selfplay_state=dict(
+                anchor=self.selfplay_anchor.state_dict(),
+                pool=[net.state_dict() for net in self.selfplay_pool],
+            )
+            if self.selfplay_anchor is not None and self.config.opponent in ("selfplay", "mixed")
+            else None,
         )
 
     def _load(self, trainer, env):
         cfg = self.config
         if cfg.init_mode == "fresh":
-            return
+            return {}
         meta = trainer.load(cfg.checkpoint, resume=cfg.init_mode == "resume")
         old = meta.get("configuration", {})
         if old.get("arena") != env.arena.to_dict() or old.get("robot") != asdict(RobotConfig()):
@@ -194,6 +302,10 @@ class TrainingSession:
                     raise ValueError(
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
                     )
+            if self.curriculum:
+                for key in ("curriculum_success_threshold", "curriculum_min_episodes", "curriculum_window"):
+                    if previous_config.get(key) != getattr(cfg, key):
+                        raise ValueError("Critérios do currículo diferentes dos pesos; use transferência")
             for key in (
                 "robots_per_team",
                 "opponent_robots",
@@ -221,6 +333,7 @@ class TrainingSession:
                 )
         else:
             trainer.total_steps = trainer.environment_steps = trainer.updates_count = 0
+        return meta
 
     def run(self):
         cfg = self.config
@@ -232,6 +345,7 @@ class TrainingSession:
         # Also handle window close/OS termination at the next worker boundary.
         def stop(signum, frame):
             self.stop_requested = True
+            self.stop_reason = "interrupt"
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_handlers[sig] = signal.signal(sig, stop)
@@ -260,8 +374,28 @@ class TrainingSession:
         stage = curriculum_stage(cfg, 0)
         envs = [cfg.make_env(stage) for _ in range(cfg.envs)]
         observations = [env.reset(seed=cfg.seed + i)[0] for i, env in enumerate(envs)]
-        self._load(trainer, envs[0])
-        pool = deque(maxlen=6)
+        loaded_meta = self._load(trainer, envs[0])
+        if self.curriculum and cfg.init_mode == "resume":
+            self.curriculum.restore(loaded_meta.get("curriculum") or {})
+            stage = self.curriculum.stage
+            for i, env in enumerate(envs):
+                env.scenario = stage
+                observations[i] = env.reset(seed=cfg.seed + i)[0]
+        pool = deque(maxlen=cfg.selfplay_pool_size)
+        self.selfplay_pool = pool
+        self.selfplay_anchor = deepcopy(trainer.net).eval()
+        self.selfplay_anchor.requires_grad_(False)
+        if cfg.init_mode == "resume":
+            previous_best = loaded_meta.get("best_evaluation_score")
+            if isinstance(previous_best, (int, float)) and math.isfinite(previous_best):
+                self.best = previous_best
+            saved_league = loaded_meta.get("selfplay_state")
+            if saved_league:
+                self.selfplay_anchor.load_state_dict(saved_league["anchor"])
+                for state in saved_league["pool"][-cfg.selfplay_pool_size :]:
+                    net = deepcopy(self.selfplay_anchor)
+                    net.load_state_dict(state)
+                    pool.append(net)
         opponents = [None] * cfg.envs
         rng = np.random.default_rng(cfg.seed + 12345)
         returns = np.zeros(cfg.envs)
@@ -279,11 +413,16 @@ class TrainingSession:
             if cfg.opponent in ("none", "zero"):
                 opponents[index] = "zero"
             elif cfg.opponent == "selfplay" or (cfg.opponent == "mixed" and roll < 0.35):
-                opponents[index] = pool[int(rng.integers(len(pool)))]
+                opponents[index] = (
+                    self.selfplay_anchor
+                    if rng.random() < cfg.selfplay_anchor_probability
+                    else pool[int(rng.integers(len(pool)))]
+                )
             else:
                 opponents[index] = "zero" if cfg.opponent == "mixed" and roll > 0.90 else None
 
-        snapshot()  # Pure self-play starts against a frozen copy from episode 1.
+        if not pool:
+            snapshot()  # Pure self-play starts against a frozen copy from episode 1.
         for i in range(cfg.envs):
             choose(i)
         trainer.save(self.save_path, self.metadata(envs[0], trainer))
@@ -294,7 +433,7 @@ class TrainingSession:
             (self.directory / "episodes.jsonl").open("w", encoding="utf8") as episodes_log,
         ):
             while self.finished < cfg.effective_steps:
-                tick = time.monotonic()
+                tick = time.perf_counter()
                 if self.control():
                     break
                 if self.paused:
@@ -304,7 +443,11 @@ class TrainingSession:
                     continue
                 if self.phase == "paused":
                     self.status("running", updates=trainer.updates_count)
-                stage = curriculum_stage(cfg, self.finished / cfg.effective_steps)
+                stage = (
+                    self.curriculum.stage
+                    if self.curriculum
+                    else curriculum_stage(cfg, self.finished / cfg.effective_steps)
+                )
                 obs = np.concatenate(observations)
                 actions, lp, values = trainer.select_action(obs)
                 next_obs, rewards, terms, truncs, ended = [], [], [], [], []
@@ -334,6 +477,8 @@ class TrainingSession:
                             result=info["result"],
                             seconds=info["episode_seconds"],
                             stage=env.scenario,
+                            initialization=env.initialization,
+                            reward_components=info["episode_reward_components"],
                         )
                         self.episodes += 1
                         self.episode_records.append(record)
@@ -350,7 +495,11 @@ class TrainingSession:
                     next_obs=np.concatenate(next_obs),
                     env_count=cfg.envs,
                 )
+                if self.curriculum:
+                    self.curriculum.update(self.episode_records)
+                    stage = self.curriculum.stage
                 self.finished += cfg.envs
+                self.progress()
                 self.publish(
                     envs[0],
                     trainer,
@@ -376,11 +525,11 @@ class TrainingSession:
                 if trainer.buffer_steps >= cfg.rollout or self.finished >= cfg.effective_steps:
                     self._update(trainer, envs[0], pool, snapshot, log)
                 # Speed controls the environment shown, independent of number of workers.
-                while self.speed > 0 and time.monotonic() - tick < envs[0].engine.dt / self.speed:
+                while self.speed > 0 and time.perf_counter() - tick < envs[0].engine.dt / self.speed:
                     if self.control() or self.paused:
                         break
                     time.sleep(
-                        max(0.0, min(0.02, envs[0].engine.dt / self.speed - (time.monotonic() - tick)))
+                        max(0.0, min(0.02, envs[0].engine.dt / self.speed - (time.perf_counter() - tick)))
                     )
             if trainer.buffer_steps:
                 self._update(trainer, envs[0], pool, snapshot, log, evaluate=False)
@@ -393,10 +542,12 @@ class TrainingSession:
 
     def _update(self, trainer, env, pool, snapshot, log, evaluate=True):
         cfg = self.config
+        self.status("updating", updates=trainer.updates_count)
         trainer.update(epochs=cfg.epochs, batch_size=cfg.batch_size)
         if trainer.updates_count % cfg.snapshot_every == 0:
             snapshot()
         metadata = self.metadata(env, trainer)
+        self.status("saving", updates=trainer.updates_count)
         trainer.save(self.save_path, metadata)
         recent = list(self.episode_records)[-20:]
         record = dict(
@@ -408,8 +559,15 @@ class TrainingSession:
             mean_episode_reward=float(np.mean([r["reward"] for r in recent])) if recent else None,
             success_rate=float(np.mean([r["success"] for r in recent])) if recent else None,
             samples=trainer.total_steps,
-            wall_seconds=time.monotonic() - self.started,
+            wall_seconds=time.perf_counter() - self.started,
             selfplay_pool=len(pool),
+            curriculum=self.curriculum.state() if self.curriculum else None,
+            mean_reward_components={
+                key: float(np.mean([r["reward_components"][key] for r in recent]))
+                for key in recent[0]["reward_components"]
+            }
+            if recent
+            else {},
             **trainer.metrics,
         )
         if (
@@ -418,16 +576,34 @@ class TrainingSession:
             and (trainer.updates_count % cfg.eval_every == 0 or self.finished >= cfg.effective_steps)
         ):
             self.status("evaluating", updates=trainer.updates_count)
-            score = evaluate_config(trainer, cfg, should_stop=self.control)
+            score = (
+                evaluate_opponent_suite(trainer, cfg, self.selfplay_anchor, self.control)
+                if cfg.evaluation_suite
+                else evaluate_config(trainer, cfg, should_stop=self.control)
+            )
             self.last_evaluation = score
             record["evaluation"] = score
-            if score["episodes"] and score["success_rate"] > self.best:
-                self.best = score["success_rate"]
-                trainer.save(self.save_path.with_suffix(".best.pt"), dict(metadata, evaluation=score))
+            quality = (
+                score.get("point_score", score["success_rate"])
+                if cfg.evaluation_suite
+                else score["success_rate"]
+            )
+            if score["episodes"] and score.get("complete", True) and quality > self.best:
+                self.best = quality
+                trainer.save(
+                    self.save_path.with_suffix(".best.pt"),
+                    dict(metadata, evaluation=score, best_evaluation_score=self.best),
+                )
+            # Persist the selection score immediately, so a restart just after
+            # evaluation cannot forget which quality threshold has been reached.
+            trainer.save(self.save_path, dict(self.metadata(env, trainer), evaluation=score))
         log.write(json.dumps(record, allow_nan=False) + "\n")
         log.flush()
         self.status("running", updates=trainer.updates_count, metrics=record)
-        print(
-            f"{self.finished}/{cfg.effective_steps} env steps | update {trainer.updates_count} | {env.scenario} | KL {trainer.metrics['approx_kl']:.4f}",
-            flush=True,
-        )
+        if self.reporter:
+            self.reporter("metrics", record)
+        else:
+            print(
+                f"{self.finished}/{cfg.effective_steps} env steps | update {trainer.updates_count} | {env.scenario} | KL {trainer.metrics['approx_kl']:.4f}",
+                flush=True,
+            )

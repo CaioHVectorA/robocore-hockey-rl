@@ -1,6 +1,7 @@
 """Metric overhead viewport shared by training frames, previews and replay."""
 
 import pygame
+from core.arena_geometry import arena_outline, arena_wall_segments
 from ui.robot_renderer import draw_robot
 
 BLUE, RED = (34, 113, 217), (213, 66, 80)
@@ -23,31 +24,47 @@ def draw_arena(screen, rect, arena, robot, frame, font, selected=0, tracking=Fal
     world, _, scale = projection(rect, arena)
     a = arena
     pygame.draw.rect(screen, (21, 32, 48), rect, border_radius=16)
-    rink = pygame.Rect(0, 0, round(a.length * scale), round(a.width * scale))
-    rink.center = rect.center
-    pygame.draw.rect(screen, (222, 233, 235), rink, border_radius=round(a.corner_radius * scale))
-    pygame.draw.rect(screen, (187, 207, 214), rink, width=3, border_radius=round(a.corner_radius * scale))
+    # The pockets are part of the floor, with the same boundary used by Pymunk.
+    # No closed outline across the mouth and no decorative net hiding solid walls.
+    floor = [world(x, y) for x, y in arena_outline(a)]
+    pygame.draw.polygon(screen, (51, 59, 72), floor)
     for sign in (-1, 1):
         p, q = (
             world(sign * a.half_length, a.goal_width / 2),
             world(sign * (a.half_length + a.goal_depth), -a.goal_width / 2),
         )
         goal = pygame.Rect(min(p[0], q[0]), min(p[1], q[1]), abs(q[0] - p[0]), abs(q[1] - p[1]))
-        pygame.draw.rect(screen, BLUE if sign == -1 else RED, goal, border_radius=3)
-        for yy in range(goal.top, goal.bottom, 7):
-            pygame.draw.line(screen, (151, 176, 190), (goal.left, yy), (goal.right, yy), 1)
-        pygame.draw.circle(screen, (123, 177, 200), world(sign * a.half_length, 0), round(22 * scale), 2)
-    pygame.draw.line(screen, (195, 88, 103), world(0, a.half_width), world(0, -a.half_width), 2)
-    pygame.draw.circle(screen, (115, 158, 182), world(0, 0), round(20 * scale), 2)
-    pygame.draw.circle(screen, (195, 88, 103), world(0, 0), 3)
-    for sign in (-1, 1):
-        pygame.draw.line(
-            screen,
-            (149, 183, 201),
-            world(sign * a.length * 0.25, -a.half_width),
-            world(sign * a.length * 0.25, a.half_width),
-            1,
+        color = BLUE if sign == -1 else RED
+        pygame.draw.rect(screen, (34, 59, 91) if sign == -1 else (84, 44, 56), goal)
+        # A dashed scoring line is a reference marking, never a collider.
+        for y in range(round(-a.goal_width / 2), round(a.goal_width / 2), 5):
+            pygame.draw.line(
+                screen,
+                color,
+                world(sign * a.half_length, y),
+                world(sign * a.half_length, min(y + 2, a.goal_width / 2)),
+                2,
+            )
+        label = pygame.transform.rotate(font.render("GOL", True, (223, 231, 242)), 90)
+        screen.blit(label, label.get_rect(center=world(sign * (a.half_length + a.goal_depth / 2), 0)))
+    pygame.draw.line(screen, (91, 108, 128), world(0, a.half_width), world(0, -a.half_width), 1)
+    pygame.draw.circle(screen, (91, 108, 128), world(0, 0), round(20 * scale), 1)
+    pygame.draw.circle(screen, (180, 193, 209), world(0, 0), 3)
+    for start, end in arena_wall_segments(a):
+        corner = (
+            start[0] * end[0] > 0
+            and start[1] * end[1] > 0
+            and all(
+                abs(x) > a.half_length - a.corner_radius - 0.01
+                and abs(y) > a.half_width - a.corner_radius - 0.01
+                for x, y in (start, end)
+            )
         )
+        color = (187, 83, 88) if corner else (185, 195, 207)
+        # A shadow and highlight suggest the modular physical barrier in the reference.
+        p, q = world(*start), world(*end)
+        pygame.draw.line(screen, (13, 20, 30), (p[0] + 2, p[1] + 3), (q[0] + 2, q[1] + 3), 5)
+        pygame.draw.line(screen, color, p, q, 3)
     for x, y, theta, team, role in frame["robots"]:
         draw_robot(screen, world, x, y, theta, BLUE if team == 0 else RED, robot)
         centre = world(x, y)
