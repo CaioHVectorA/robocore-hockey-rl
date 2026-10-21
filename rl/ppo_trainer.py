@@ -16,7 +16,7 @@ from torch.distributions import Normal
 class HockeyPolicyNet(nn.Module):
     """Rede Ator-Crítico contínua leve para inferência em tempo real (< 0.2 ms)."""
 
-    def __init__(self, obs_dim: int = 18, act_dim: int = 2, hidden_dim: int = 128):
+    def __init__(self, obs_dim: int = 27, act_dim: int = 2, hidden_dim: int = 128):
         super().__init__()
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -40,11 +40,11 @@ class HockeyPolicyNet(nn.Module):
 
 
 class HockeyPPOTrainer:
-    """Treinador PPO com GAE-lambda e recorte de gradiente separado entre Ator e Crítico."""
+    """Treinador PPO Multi-Agente com Parameter Sharing para Hockey 3v3."""
 
     def __init__(
         self,
-        obs_dim: int = 18,
+        obs_dim: int = 27,
         act_dim: int = 2,
         lr: float = 3e-4,
         gamma: float = 0.99,
@@ -94,36 +94,64 @@ class HockeyPPOTrainer:
     @torch.no_grad()
     def select_action(
         self, obs: np.ndarray, deterministic: bool = False
-    ) -> Tuple[np.ndarray, float, float]:
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+    ) -> Tuple[np.ndarray, Any, Any]:
+        """
+        Calcula ações para 1 robô ou para todo o trio de robôs [3, 27] em paralelo.
+        """
+        obs_arr = np.asarray(obs, dtype=np.float32)
+        is_batch = (obs_arr.ndim == 2)
+        obs_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=self.device)
+        if not is_batch:
+            obs_t = obs_t.unsqueeze(0)
+
         mean, val = self.net(obs_t)
+        std = torch.exp(torch.clamp(self.net.log_std, -1.8, 0.2))
+        dist = Normal(mean, std)
+
         if deterministic:
             action = mean
-            logp = torch.zeros(1, device=self.device)
+            logp = torch.zeros(obs_t.shape[0], device=self.device)
         else:
-            std = torch.exp(torch.clamp(self.net.log_std, -1.8, 0.2))
-            dist = Normal(mean, std)
             action = dist.sample()
             logp = dist.log_prob(action).sum(dim=-1)
-        act_np = np.clip(action.squeeze(0).cpu().numpy(), -1.0, 1.0)
-        return act_np, float(logp.item()), float(val.item())
+
+        act_np = np.clip(action.cpu().numpy(), -1.0, 1.0)
+        val_np = val.squeeze(-1).cpu().numpy()
+        logp_np = logp.cpu().numpy()
+
+        if not is_batch:
+            return act_np[0], float(logp_np[0]), float(val_np[0])
+        return act_np, logp_np, val_np
 
     def store_transition(
         self,
         obs: np.ndarray,
         act: np.ndarray,
-        logp: float,
-        rew: float,
-        val: float,
+        logp: Any,
+        rew: Any,
+        val: Any,
         done: bool,
     ) -> None:
-        self.obs_buf.append(obs)
-        self.act_buf.append(act)
-        self.logp_buf.append(logp)
-        self.rew_buf.append(rew)
-        self.val_buf.append(val)
-        self.done_buf.append(done)
-        self.total_steps += 1
+        """Armazena transição de um robô ou de toda a equipe 3v3."""
+        obs_arr = np.asarray(obs)
+        if obs_arr.ndim == 2 and obs_arr.shape[0] == 3:
+            indiv_rews = rew if isinstance(rew, (list, tuple, np.ndarray)) else [rew, rew, rew]
+            for i in range(3):
+                self.obs_buf.append(obs_arr[i])
+                self.act_buf.append(act[i])
+                self.logp_buf.append(float(logp[i]))
+                self.rew_buf.append(float(indiv_rews[i]))
+                self.val_buf.append(float(val[i]))
+                self.done_buf.append(done)
+                self.total_steps += 1
+        else:
+            self.obs_buf.append(obs_arr)
+            self.act_buf.append(act)
+            self.logp_buf.append(float(logp))
+            self.rew_buf.append(float(rew))
+            self.val_buf.append(float(val))
+            self.done_buf.append(done)
+            self.total_steps += 1
 
     def update(self, epochs: int = 6, batch_size: int = 128) -> float:
         n = len(self.rew_buf)

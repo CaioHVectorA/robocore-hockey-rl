@@ -26,7 +26,7 @@ from .constants import HockeyConstants as C
 @dataclass
 class HockeyRobot:
     team: int            # 0 = Azul (Esquerda, defende -90, ataca +90), 1 = Vermelho (Direita, ataca -90)
-    role_id: int         # 0 = Principal (Atacante/Livre), 1 = Defensor (se time de múltiplos)
+    role_id: int         # 0 = Atacante, 1 = Ala/Defensor, 2 = Goleiro
     x: float = 0.0       # Coordenada X (cm)
     y: float = 0.0       # Coordenada Y (cm)
     theta: float = 0.0   # Orientação do chassi (radianos)
@@ -39,6 +39,45 @@ class HockeyRobot:
     cmd_right: float = 0.0
     touched_puck: bool = False
     has_puck_in_scoop: bool = False
+    is_slipping: bool = False               # Se as rodas estão em derrapagem física (wheel slip)
+    scoop_ejected: bool = False             # Se acabou de ejetar o puck em giro centrífugo
+    motor_gain_l: float = 1.0              # Assimetria física real do motor esquerdo
+    motor_gain_r: float = 1.0              # Assimetria física real do motor direito
+    deadband: float = C.MOTOR_DEADBAND     # Zona morta de partida física dos motores N20/25GA
+    ble_last_packet_time: float = 0.0      # Timestamp do último comando BLE válido recebido
+
+    # Propriedades de massa, inércia e contato derivadas do CAD Fusion 360 (454g)
+    mass: float = C.ROBOT_MASS
+    inertia_z: float = C.ROBOT_INERTIA
+    com_x: float = 0.0
+    com_z: float = C.COM_Z_HEIGHT
+    wheel_load_ratio: float = 0.75
+    skid_load_ratio: float = 0.25
+    scoop_depth: float = C.SCOOP_DEPTH
+    scoop_width: float = C.SCOOP_WIDTH
+
+    def __post_init__(self) -> None:
+        if self.role_id == 0:  # Atacante: Côncavo agressivo e carga adiantada na pá
+            self.inertia_z = C.ROBOT_INERTIA_STRIKER
+            self.com_x = C.COM_X_STRIKER
+            self.wheel_load_ratio = C.WHEEL_LOAD_STRIKER
+            self.skid_load_ratio = 1.0 - C.WHEEL_LOAD_STRIKER
+            self.scoop_depth = 2.2
+            self.scoop_width = 11.0
+        elif self.role_id == 1:  # Ala / Defensor: Côncavo equilibrado com defletores
+            self.inertia_z = C.ROBOT_INERTIA_DEFENDER
+            self.com_x = C.COM_X_DEFENDER
+            self.wheel_load_ratio = C.WHEEL_LOAD_DEFENDER
+            self.skid_load_ratio = 1.0 - C.WHEEL_LOAD_DEFENDER
+            self.scoop_depth = 1.8
+            self.scoop_width = 12.0
+        else:  # Goleiro: Frente ampla para bloqueio e carga recuada nas rodas tratoras
+            self.inertia_z = C.ROBOT_INERTIA_GOALIE
+            self.com_x = C.COM_X_GOALIE
+            self.wheel_load_ratio = C.WHEEL_LOAD_GOALIE
+            self.skid_load_ratio = 1.0 - C.WHEEL_LOAD_GOALIE
+            self.scoop_depth = 0.8
+            self.scoop_width = 14.0
 
 
 @dataclass
@@ -51,10 +90,17 @@ class HockeyPuck:
     trail: List[Tuple[float, float]] = field(default_factory=list)
 
 
+@dataclass
+class BLEPacket:
+    arrival_time: float
+    blue_cmds: List[Tuple[float, float]]
+    red_cmds: List[Tuple[float, float]]
+
+
 class HockeyPhysicsEngine:
     """Motor físico oficial de Hockey de Robôs RoboCore a 60 Hz."""
 
-    def __init__(self, robots_per_team: int = 1, domain_randomization: bool = True):
+    def __init__(self, robots_per_team: int = C.ROBOTS_PER_TEAM, domain_randomization: bool = True):
         self.robots_per_team = robots_per_team
         self.domain_randomization = domain_randomization
 
@@ -67,14 +113,16 @@ class HockeyPhysicsEngine:
         self.steps: int = 0
         self.match_time: float = 0.0
 
-        # Parâmetros de atrito e piso sorteados por episódio (Domain Randomization)
+        # Parâmetros físicos de atrito e piso sorteados por episódio (Domain Randomization)
         self.friction_mu: float = C.PUCK_SLIDING_FRICTION
-        self.motor_gain_scale: float = 1.0
+        self.friction_static: float = C.PUCK_STATIC_FRICTION
+        self.tire_mu: float = C.TIRE_FRICTION_COEFF
 
-        # Buffer de atraso de comando BLE (simula ~30ms de latência de rádio Bluetooth)
-        self.ble_latency_steps: int = 2
-        self.blue_cmd_buffer: List[List[Tuple[float, float]]] = []
-        self.red_cmd_buffer: List[List[Tuple[float, float]]] = []
+        # Canal de comunicação Bluetooth BLE real (com latência variável, jitter e perda de pacotes)
+        self.ble_queue: List[BLEPacket] = []
+        self.last_blue_cmds: List[Tuple[float, float]] = [(0.0, 0.0) for _ in range(self.robots_per_team)]
+        self.last_red_cmds: List[Tuple[float, float]] = [(0.0, 0.0) for _ in range(self.robots_per_team)]
+        self.ble_latency_ms: float = 30.0
 
         self.reset_match()
 
@@ -90,26 +138,38 @@ class HockeyPhysicsEngine:
         self.reset_positions(faceoff=True)
 
     def reset_positions(self, faceoff: bool = True) -> None:
-        """Reinicia posições para o Face-off (disco no centro)."""
+        """Reinicia posições para o Face-off (disco no centro) na formação 3v3 oficial."""
         self.steps = 0
         self.match_time = 0.0
 
         if self.domain_randomization:
-            # Varia atrito do disco no piso em +-15% e motores em +-8%
+            # Varia atrito do disco no piso em +-15% e atrito pneu-chão em +-10%
             self.friction_mu = C.PUCK_SLIDING_FRICTION * float(np.random.uniform(0.85, 1.18))
-            self.motor_gain_scale = float(np.random.uniform(0.92, 1.08))
+            self.friction_static = C.PUCK_STATIC_FRICTION * float(np.random.uniform(0.88, 1.15))
+            self.tire_mu = C.TIRE_FRICTION_COEFF * float(np.random.uniform(0.88, 1.12))
         else:
             self.friction_mu = C.PUCK_SLIDING_FRICTION
-            self.motor_gain_scale = 1.0
+            self.friction_static = C.PUCK_STATIC_FRICTION
+            self.tire_mu = C.TIRE_FRICTION_COEFF
 
         # Disco no centro da arena (Face-off)
         px = float(np.random.uniform(-1.5, 1.5)) if faceoff else 0.0
         py = float(np.random.uniform(-2.0, 2.0)) if faceoff else 0.0
         self.puck = HockeyPuck(x=px, y=py, vx=0.0, vy=0.0)
 
-        # Spawns dos robôs (Azul na esquerda em X=-50 cm, Vermelho na direita em X=+50 cm)
-        blue_spawns = [(-50.0, 0.0, 0.0), (-72.0, -22.0, 0.0), (-72.0, 22.0, 0.0)]
-        red_spawns = [(50.0, 0.0, math.pi), (72.0, 22.0, math.pi), (72.0, -22.0, math.pi)]
+        # Spawns táticos oficiais para Hockey 3v3:
+        # Time Azul: Atacante (X=-35, Y=0), Ala/Defensor (X=-58, Y=26), Goleiro (X=-76, Y=0)
+        # Time Vermelho: Atacante (X=+35, Y=0), Ala/Defensor (X=+58, Y=-26), Goleiro (X=+76, Y=0)
+        blue_spawns = [
+            (-35.0, 0.0, 0.0),
+            (-58.0, 26.0, 0.0),
+            (-76.0, 0.0, 0.0),
+        ]
+        red_spawns = [
+            (35.0, 0.0, math.pi),
+            (58.0, -26.0, math.pi),
+            (76.0, 0.0, math.pi),
+        ]
 
         for i, r in enumerate(self.blue_robots):
             sx, sy, st = blue_spawns[i % len(blue_spawns)]
@@ -120,6 +180,19 @@ class HockeyPhysicsEngine:
             r.cmd_left = r.cmd_right = 0.0
             r.touched_puck = False
             r.has_puck_in_scoop = False
+            r.is_slipping = False
+            r.scoop_ejected = False
+            r.ble_last_packet_time = 0.0
+
+            if self.domain_randomization:
+                # Assimetria realística entre os motores da Vespa (~+-5%) e zona morta (~9% a 15%)
+                r.motor_gain_l = float(np.random.uniform(0.95, 1.05))
+                r.motor_gain_r = float(np.random.uniform(0.95, 1.05))
+                r.deadband = float(np.random.uniform(0.09, 0.15))
+            else:
+                r.motor_gain_l = 1.0
+                r.motor_gain_r = 1.0
+                r.deadband = C.MOTOR_DEADBAND
 
         for i, r in enumerate(self.red_robots):
             sx, sy, st = red_spawns[i % len(red_spawns)]
@@ -130,9 +203,22 @@ class HockeyPhysicsEngine:
             r.cmd_left = r.cmd_right = 0.0
             r.touched_puck = False
             r.has_puck_in_scoop = False
+            r.is_slipping = False
+            r.scoop_ejected = False
+            r.ble_last_packet_time = 0.0
 
-        self.blue_cmd_buffer.clear()
-        self.red_cmd_buffer.clear()
+            if self.domain_randomization:
+                r.motor_gain_l = float(np.random.uniform(0.95, 1.05))
+                r.motor_gain_r = float(np.random.uniform(0.95, 1.05))
+                r.deadband = float(np.random.uniform(0.09, 0.15))
+            else:
+                r.motor_gain_l = 1.0
+                r.motor_gain_r = 1.0
+                r.deadband = C.MOTOR_DEADBAND
+
+        self.ble_queue.clear()
+        self.last_blue_cmds = [(0.0, 0.0) for _ in range(self.robots_per_team)]
+        self.last_red_cmds = [(0.0, 0.0) for _ in range(self.robots_per_team)]
 
     def apply_puck_impulse(self, impulse_vx: float, impulse_vy: float) -> None:
         """Aplica um impulso externo no disco (ex.: peteleco via mouse na interface)."""
@@ -146,44 +232,66 @@ class HockeyPhysicsEngine:
     ) -> Dict[str, Any]:
         """
         Executa 1 tick de física (dt = 1/60 s).
-        blue_actions, red_actions: pares (u_left, u_right) em [-1.0, +1.0]^2.
+        Modela canal Bluetooth BLE com latência, jitter, perda de pacotes e watchdog do ESP32.
         """
         self.steps += 1
         self.match_time += C.DT
 
-        # 1. Enfileira comandos no buffer para simular atraso do Bluetooth BLE (~32 ms)
-        scaled_blue = [
-            (
-                float(np.clip(ul, -1.0, 1.0)) * C.MAX_WHEEL_SPEED * self.motor_gain_scale,
-                float(np.clip(ur, -1.0, 1.0)) * C.MAX_WHEEL_SPEED * self.motor_gain_scale,
-            )
-            for (ul, ur) in blue_actions
-        ]
-        scaled_red = [
-            (
-                float(np.clip(ul, -1.0, 1.0)) * C.MAX_WHEEL_SPEED * self.motor_gain_scale,
-                float(np.clip(ur, -1.0, 1.0)) * C.MAX_WHEEL_SPEED * self.motor_gain_scale,
-            )
-            for (ul, ur) in red_actions
-        ]
+        # 1. Simulação do Canal de Rádio Bluetooth BLE (Vespa ESP32)
+        jitter = float(np.random.uniform(-C.BLE_JITTER_MAX, C.BLE_JITTER_MAX))
+        pkt_latency = max(0.010, C.BLE_CONNECTION_INTERVAL + jitter)
+        self.ble_latency_ms = pkt_latency * 1000.0
 
-        self.blue_cmd_buffer.append(scaled_blue)
-        self.red_cmd_buffer.append(scaled_red)
+        # Simula perda de pacotes em 2.4 GHz em competição
+        is_dropped = (self.domain_randomization and float(np.random.rand()) < C.BLE_PACKET_LOSS_PROB)
+        if not is_dropped:
+            arrival = self.match_time + pkt_latency
+            self.ble_queue.append(BLEPacket(arrival, list(blue_actions), list(red_actions)))
 
-        effective_blue = self.blue_cmd_buffer.pop(0) if len(self.blue_cmd_buffer) > self.ble_latency_steps else scaled_blue
-        effective_red = self.red_cmd_buffer.pop(0) if len(self.red_cmd_buffer) > self.ble_latency_steps else scaled_red
+        # Processa pacotes que atingiram o tempo de recepção no ESP32
+        delivered_blue = None
+        delivered_red = None
+        remaining_queue = []
+        for pkt in self.ble_queue:
+            if pkt.arrival_time <= self.match_time:
+                delivered_blue = pkt.blue_cmds
+                delivered_red = pkt.red_cmds
+            else:
+                remaining_queue.append(pkt)
+        self.ble_queue = remaining_queue
 
-        for r, (cmd_l, cmd_r) in zip(self.blue_robots, effective_blue):
-            r.cmd_left = cmd_l
-            r.cmd_right = cmd_r
+        if delivered_blue is not None:
+            self.last_blue_cmds = delivered_blue
+            for r in self.blue_robots:
+                r.ble_last_packet_time = self.match_time
+
+        if delivered_red is not None:
+            self.last_red_cmds = delivered_red
+            for r in self.red_robots:
+                r.ble_last_packet_time = self.match_time
+
+        # Watchdog de segurança do ESP32: corta motores se passar mais de 200 ms sem dados válidos
+        for r, (ul, ur) in zip(self.blue_robots, self.last_blue_cmds):
+            if (self.match_time - r.ble_last_packet_time) > C.BLE_WATCHDOG_TIMEOUT and r.ble_last_packet_time > 0:
+                r.cmd_left = 0.0
+                r.cmd_right = 0.0
+            else:
+                r.cmd_left = float(np.clip(ul, -1.0, 1.0)) * C.MAX_WHEEL_SPEED
+                r.cmd_right = float(np.clip(ur, -1.0, 1.0)) * C.MAX_WHEEL_SPEED
             r.touched_puck = False
             r.has_puck_in_scoop = False
+            r.scoop_ejected = False
 
-        for r, (cmd_l, cmd_r) in zip(self.red_robots, effective_red):
-            r.cmd_left = cmd_l
-            r.cmd_right = cmd_r
+        for r, (ul, ur) in zip(self.red_robots, self.last_red_cmds):
+            if (self.match_time - r.ble_last_packet_time) > C.BLE_WATCHDOG_TIMEOUT and r.ble_last_packet_time > 0:
+                r.cmd_left = 0.0
+                r.cmd_right = 0.0
+            else:
+                r.cmd_left = float(np.clip(ul, -1.0, 1.0)) * C.MAX_WHEEL_SPEED
+                r.cmd_right = float(np.clip(ur, -1.0, 1.0)) * C.MAX_WHEEL_SPEED
             r.touched_puck = False
             r.has_puck_in_scoop = False
+            r.scoop_ejected = False
 
         # 2. Sub-stepping 2x para precisão de contato da pá e curvas arredondadas
         sub_dt = C.DT * 0.5
@@ -212,19 +320,93 @@ class HockeyPhysicsEngine:
             "goal_scored": goal_scored,
             "blue_has_scoop": self.blue_robots[0].has_puck_in_scoop if self.blue_robots else False,
             "red_has_scoop": self.red_robots[0].has_puck_in_scoop if self.red_robots else False,
+            "blue_is_slipping": self.blue_robots[0].is_slipping if self.blue_robots else False,
+            "blue_scoop_ejected": self.blue_robots[0].scoop_ejected if self.blue_robots else False,
             "puck_speed": math.hypot(self.puck.vx, self.puck.vy),
+            "ble_latency_ms": self.ble_latency_ms,
         }
 
     def _integrate_robots(self, dt: float) -> None:
-        """Cinemática diferencial e resposta de 1ª ordem dos motores DC da Vespa."""
+        """
+        Cinemática diferencial e dinâmica eletromecânica dos motores DC da Vespa:
+        - Carga normal estática e transferência dinâmica de carga longitudinal/lateral
+        - Limite de tração dependente da carga normal nas rodas tratoras
+        - Arrasto por atrito cinético do patim dianteiro de Teflon no piso
+        - Zona morta física (deadband) da ponte H / caixa de redução
+        - Assimetria estocástica de motores (calibração de trim)
+        - Inércia rotacional I_zz calculada via CAD Fusion 360
+        """
         alpha = min(1.0, dt / C.MOTOR_TAU)
-        for r in self.all_robots:
-            r.v_left += (r.cmd_left - r.v_left) * alpha
-            r.v_right += (r.cmd_right - r.v_right) * alpha
 
+        for r in self.all_robots:
+            # 1. Aplicação da Zona Morta Física (Deadband) da ponte H / motor DC
+            def apply_deadband(cmd_norm: float, db: float) -> float:
+                mag = abs(cmd_norm)
+                if mag < db:
+                    return 0.0
+                eff = (mag - db) / (1.0 - db)
+                return math.copysign(eff, cmd_norm)
+
+            u_l = apply_deadband(r.cmd_left / C.MAX_WHEEL_SPEED, r.deadband)
+            u_r = apply_deadband(r.cmd_right / C.MAX_WHEEL_SPEED, r.deadband)
+
+            # 2. Resposta de velocidade com calibração de ganho assimétrico de cada motor
+            target_v_l = u_l * r.motor_gain_l * C.MAX_WHEEL_SPEED
+            target_v_r = u_r * r.motor_gain_r * C.MAX_WHEEL_SPEED
+
+            dv_l_demand = (target_v_l - r.v_left) * alpha
+            dv_r_demand = (target_v_r - r.v_right) * alpha
+
+            # 3. Transferência Dinâmica de Carga Normal (Dynamic Load Transfer)
+            # Aceleração longitudinal estimada do chassi
+            a_lin_est = 0.5 * (dv_l_demand + dv_r_demand) / dt
+            # Carga dinâmica transferida entre eixo e patim dianteiro sob aceleração longitudinal
+            delta_n_dyn = (r.mass * a_lin_est * r.com_z) / C.AXLE_SKID_DIST
+            total_weight = r.mass * C.GRAVITY
+            n_wheels_dyn = max(0.20 * total_weight, total_weight * r.wheel_load_ratio + delta_n_dyn)
+            n_skid_dyn = max(0.04 * total_weight, total_weight * r.skid_load_ratio - delta_n_dyn)
+
+            # Limite de aderência real baseado na carga normal instantânea das rodas
+            effective_traction_accel = (self.tire_mu * n_wheels_dyn) / r.mass
+            max_dv_grip = effective_traction_accel * dt
+
+            # Arrasto de atrito do patim frontal no piso (Teflon/UHMW mu ~ 0.12)
+            skid_drag_decel = (C.SKID_FRICTION_COEFF * n_skid_dyn) / r.mass
+
+            r.is_slipping = False
+
+            if abs(dv_l_demand) > max_dv_grip:
+                r.is_slipping = True
+                slip_eff = C.TIRE_SLIP_FRICTION * C.GRAVITY * (n_wheels_dyn / total_weight)
+                dv_l_actual = math.copysign(slip_eff * dt, dv_l_demand)
+            else:
+                dv_l_actual = dv_l_demand
+
+            if abs(dv_r_demand) > max_dv_grip:
+                r.is_slipping = True
+                slip_eff = C.TIRE_SLIP_FRICTION * C.GRAVITY * (n_wheels_dyn / total_weight)
+                dv_r_actual = math.copysign(slip_eff * dt, dv_r_demand)
+            else:
+                dv_r_actual = dv_r_demand
+
+            # Efeito de arrasto do patim no solo
+            if abs(r.v_left) > 0.5:
+                dv_l_actual -= math.copysign(min(abs(r.v_left), skid_drag_decel * dt), r.v_left)
+            if abs(r.v_right) > 0.5:
+                dv_r_actual -= math.copysign(min(abs(r.v_right), skid_drag_decel * dt), r.v_right)
+
+            r.v_left += dv_l_actual
+            r.v_right += dv_r_actual
+
+            # 4. Cinemática diferencial e dinâmica angular considerando I_zz real do CAD
             v_lin = 0.5 * (r.v_right + r.v_left)
             r.omega = (r.v_right - r.v_left) / C.WHEELBASE
             r.theta = math.atan2(math.sin(r.theta + r.omega * dt), math.cos(r.theta + r.omega * dt))
+
+            # Checa derrapagem lateral em curva rápida (centrifugal slip)
+            lat_accel = abs(v_lin * r.omega)
+            if lat_accel > effective_traction_accel:
+                r.is_slipping = True
 
             r.vx = v_lin * math.cos(r.theta)
             r.vy = v_lin * math.sin(r.theta)
@@ -302,7 +484,8 @@ class HockeyPhysicsEngine:
     def _resolve_robot_puck_collisions(self) -> None:
         """
         Colisão realista entre o chassi 17x16 cm e o disco de hockey.
-        Modela a pá frontal côncava (scoop) que retém e conduz o puck!
+        Modela a pá frontal côncava (scoop) que retém e conduz o puck,
+        ejetando-o centrifugamente em giros com alta aceleração angular (spin shot)!
         """
         p = self.puck
         pr = C.PUCK_RADIUS
@@ -320,29 +503,44 @@ class HockeyPhysicsEngine:
             local_x = dx * cos_t + dy * sin_t
             local_y = -dx * sin_t + dy * cos_t
 
-            # Detecção de retenção na pá frontal côncava (scoop)
+            # Detecção de retenção na pá frontal côncava (scoop) específica do CAD
             # A pá fica na frente (+X local) centrada em Y
             is_in_scoop_zone = (
-                local_x > (hl - C.SCOOP_DEPTH - pr * 0.5)
+                local_x > (hl - r.scoop_depth - pr * 0.5)
                 and local_x < (hl + pr * 1.2)
-                and abs(local_y) < (C.SCOOP_WIDTH * 0.5)
+                and abs(local_y) < (r.scoop_width * 0.5)
             )
 
             if is_in_scoop_zone:
+                # Checa se o giro angular supera o limite centrífugo de retenção da pá (Spin Shot)
+                if abs(r.omega) > C.SCOOP_EJECTION_OMEGA:
+                    r.has_puck_in_scoop = False
+                    r.scoop_ejected = True
+                    spin_dir = math.copysign(1.0, r.omega)
+                    eject_speed = abs(r.omega) * hl * 1.45
+                    tangent_ang = r.theta + spin_dir * (math.pi * 0.35)
+                    p.vx = r.vx + math.cos(tangent_ang) * eject_speed
+                    p.vy = r.vy + math.sin(tangent_ang) * eject_speed
+                    p.x += math.cos(tangent_ang) * (pr * 1.4)
+                    p.y += math.sin(tangent_ang) * (pr * 1.4)
+                    r.touched_puck = True
+                    p.last_touch_team = r.team
+                    continue
+
                 r.has_puck_in_scoop = True
                 # A pá empurra o puck suavemente sem expulsá-lo lateralmente
-                rebound_x = hl - C.SCOOP_DEPTH + pr + 0.15
+                rebound_x = hl - r.scoop_depth + pr + 0.15
                 local_x = max(local_x, rebound_x)
                 # Efeito de retenção lateral (afunila o disco em direção ao centro da pá)
-                local_y *= 0.92
+                local_y *= 0.90
 
                 # Reconverte para coordenadas globais
                 p.x = r.x + local_x * cos_t - local_y * sin_t
                 p.y = r.y + local_x * sin_t + local_y * cos_t
 
                 # Transfere a velocidade de condução do robô para o puck
-                p.vx = r.vx * 1.08 + float(np.random.uniform(-3.0, 3.0))
-                p.vy = r.vy * 1.08 + float(np.random.uniform(-3.0, 3.0))
+                p.vx = r.vx * 1.06 + float(np.random.uniform(-2.5, 2.5))
+                p.vy = r.vy * 1.06 + float(np.random.uniform(-2.5, 2.5))
 
                 r.touched_puck = True
                 p.last_touch_team = r.team

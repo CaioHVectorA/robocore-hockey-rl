@@ -63,7 +63,7 @@ def run_hockey_gui() -> None:
     font_body = pygame.font.SysFont("Segoe UI", 13)
     font_small = pygame.font.SysFont("Consolas", 12)
 
-    env = RoboCoreHockeyEnv(robots_per_team=1, max_steps=900)
+    env = RoboCoreHockeyEnv(robots_per_team=C.ROBOTS_PER_TEAM, max_steps=900)
     obs, _ = env.reset()
     trainer = HockeyPPOTrainer(obs_dim=env.obs_dim, act_dim=env.act_dim)
     heuristic_blue_bot = HeuristicHockeyBot(team=0, difficulty=0.92)
@@ -115,8 +115,10 @@ def run_hockey_gui() -> None:
         ("HUMAN_WASD", UIButton((1158, 178, 117, 32), "App Joystick")),
     ]
 
-    btn_faceoff = UIButton((780, 246, 240, 32), "Novo Face-off (Centro)")
-    btn_save_ckpt = UIButton((1035, 246, 240, 32), "Salvar Checkpoint Agora")
+    show_vision_overlay = True
+    btn_faceoff = UIButton((780, 246, 155, 32), "Novo Face-off")
+    btn_vision = UIButton((945, 246, 175, 32), "Visão Zenital (ON)", color=(35, 75, 55))
+    btn_save_ckpt = UIButton((1130, 246, 145, 32), "Salvar Pesos")
 
     last_act = np.zeros(2, dtype=np.float32)
 
@@ -142,7 +144,11 @@ def run_hockey_gui() -> None:
                             blue_mode = m_id
                     if btn_faceoff.clicked(event.pos):
                         env.engine.reset_positions(faceoff=True)
-                        obs = env.get_robot_obs(env.engine.blue_robots[0])
+                        obs = env.get_team_obs(team=0)
+                    if btn_vision.clicked(event.pos):
+                        show_vision_overlay = not show_vision_overlay
+                        btn_vision.label = f"Visão Zenital ({'ON' if show_vision_overlay else 'OFF'})"
+                        btn_vision.color = (35, 75, 55) if show_vision_overlay else (55, 60, 70)
                     if btn_save_ckpt.clicked(event.pos):
                         os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
                         trainer.save(ckpt_path)
@@ -206,19 +212,20 @@ def run_hockey_gui() -> None:
             elif blue_mode == "PPO_EVAL":
                 act, logp, val = trainer.select_action(obs, deterministic=True)
             elif blue_mode == "HEURISTIC":
-                u_l, u_r = heuristic_blue_bot.get_actions(env.engine)[0]
-                act = np.array([u_l, u_r], dtype=np.float32)
-                logp, val = 0.0, 0.0
+                acts = heuristic_blue_bot.get_actions(env.engine)
+                act = np.array(acts, dtype=np.float32)
+                logp, val = np.zeros(3), np.zeros(3)
             else:
-                # Controle Manual WASD / Setas simulando o app RoboCore Joystick
+                # App Joystick: Pilota o Atacante (robô 0) no teclado, enquanto Ala e Goleiro seguem o bot azul
                 fwd = float(keys[pygame.K_w] or keys[pygame.K_UP]) - float(keys[pygame.K_s] or keys[pygame.K_DOWN])
                 turn = float(keys[pygame.K_d] or keys[pygame.K_RIGHT]) - float(keys[pygame.K_a] or keys[pygame.K_LEFT])
                 if keys[pygame.K_SPACE]:
-                    # Giro rápido no próprio eixo para dar tacada com a lateral/pá
-                    act = np.array([-1.0, 1.0], dtype=np.float32)
+                    act_0 = np.array([-1.0, 1.0], dtype=np.float32)
                 else:
-                    act = np.clip(np.array([fwd - 0.75 * turn, fwd + 0.75 * turn], dtype=np.float32), -1.0, 1.0)
-                logp, val = 0.0, 0.0
+                    act_0 = np.clip(np.array([fwd - 0.75 * turn, fwd + 0.75 * turn], dtype=np.float32), -1.0, 1.0)
+                auto_acts = heuristic_blue_bot.get_actions(env.engine)
+                act = np.array([act_0, auto_acts[1], auto_acts[2]], dtype=np.float32)
+                logp, val = np.zeros(3), np.zeros(3)
 
             last_act = act
             next_obs, rew, term, trunc, info = env.step(act)
@@ -226,7 +233,7 @@ def run_hockey_gui() -> None:
             episode_reward += rew
 
             if blue_mode == "PPO_TRAIN":
-                trainer.store_transition(obs, act, logp, rew, val, done)
+                trainer.store_transition(obs, act, logp, info.get("individual_rewards", rew), val, done)
                 if len(trainer.rew_buf) >= 1024:
                     trainer.update()
 
@@ -358,14 +365,14 @@ def run_hockey_gui() -> None:
             sin_t = math.sin(r.theta)
             hl_r, hw_r = C.HALF_ROBOT_L, C.HALF_ROBOT_W
 
-            # Perfil do chassi com rebaixo côncavo frontal (scoop)
+            # Perfil do chassi com rebaixo côncavo frontal (scoop) derivado do CAD
             local_chassis = [
                 (-hl_r, -hw_r),                  # Traseira esquerda
                 (hl_r, -hw_r),                   # Frente esquerda
-                (hl_r, -C.SCOOP_WIDTH * 0.5),    # Borda externa da pá esquerda
-                (hl_r - C.SCOOP_DEPTH, -C.SCOOP_WIDTH * 0.35), # Fundo côncavo da pá
-                (hl_r - C.SCOOP_DEPTH, C.SCOOP_WIDTH * 0.35),  # Fundo côncavo da pá
-                (hl_r, C.SCOOP_WIDTH * 0.5),     # Borda externa da pá direita
+                (hl_r, -r.scoop_width * 0.5),    # Borda externa da pá esquerda
+                (hl_r - r.scoop_depth, -r.scoop_width * 0.35), # Fundo côncavo da pá
+                (hl_r - r.scoop_depth, r.scoop_width * 0.35),  # Fundo côncavo da pá
+                (hl_r, r.scoop_width * 0.5),     # Borda externa da pá direita
                 (hl_r, hw_r),                    # Frente direita
                 (-hl_r, hw_r),                   # Traseira direita
             ]
@@ -400,15 +407,56 @@ def run_hockey_gui() -> None:
                 pygame.draw.polygon(screen, (15, 18, 22), wheel_px)
                 pygame.draw.polygon(screen, (130, 140, 155), wheel_px, 1)
 
+            # Efeito visual de derrapagem (Wheel Slip / fumaça de tração)
+            if r.is_slipping:
+                rcx_slip, rcy_slip = cm_to_px(r.x, r.y)
+                pygame.draw.circle(screen, (255, 175, 45), (rcx_slip, rcy_slip), 14, 2)
+
             # Placa Vespa (ESP32) no centro do chassi
             rcx, rcy = cm_to_px(r.x, r.y)
-            pygame.draw.circle(screen, (235, 94, 40), (rcx, rcy), 5)  # LED da Vespa
+            pygame.draw.circle(screen, (235, 94, 40), (rcx, rcy), 4)  # LED da Vespa
 
-            # Indicador de disco retido na pá frontal
+            # --- MARCAS FÍSICAS DE TETO DO CHASSI (RASTREAMENTO DE VISÃO COMPUTACIONAL) ---
+            # 1. Marca Frontal de Proa: LED Branco/Amarelo (+4.5 cm) para definir vetor diretor
+            proa_x = r.x + C.MARKER_FRONT_OFFSET * cos_t
+            proa_y = r.y + C.MARKER_FRONT_OFFSET * sin_t
+            proa_px = cm_to_px(proa_x, proa_y)
+            proa_r = max(4, int(C.MARKER_RADIUS * scale))
+            pygame.draw.circle(screen, (255, 255, 230), proa_px, proa_r)
+            pygame.draw.circle(screen, (30, 35, 45), proa_px, proa_r, 1)
+
+            # 2. Marca Traseira de Popa: Cor Tática do Papel (-4.5 cm)
+            popa_x = r.x + C.MARKER_REAR_OFFSET * cos_t
+            popa_y = r.y + C.MARKER_REAR_OFFSET * sin_t
+            popa_px = cm_to_px(popa_x, popa_y)
+            popa_r = max(4, int(C.MARKER_RADIUS * scale))
+
+            # Cores das marcas por time e papel (0=Atacante, 1=Ala, 2=Goleiro)
+            if r.team == 0:
+                role_colors = {0: (50, 205, 250), 1: (255, 215, 40), 2: (70, 245, 120)}
+            else:
+                role_colors = {0: (255, 110, 40), 1: (240, 70, 200), 2: (170, 60, 245)}
+            mark_col = role_colors.get(r.role_id, (200, 200, 200))
+            pygame.draw.circle(screen, mark_col, popa_px, popa_r)
+            pygame.draw.circle(screen, (20, 25, 30), popa_px, popa_r, 1)
+
+            # Eixo longitudinal medido pela visão (conecta popa à proa)
+            pygame.draw.line(screen, (190, 225, 255), popa_px, proa_px, 1)
+
+            # Tag de Papel Tático 3v3 gravada na popa: A = Atacante, D = Defensor/Ala, G = Goleiro
+            role_tag = ["A", "D", "G"][r.role_id % 3]
+            role_surf = font_small.render(role_tag, True, (240, 250, 255))
+            screen.blit(role_surf, (rcx - role_surf.get_width() // 2, rcy - 17))
+
+            # Indicador de disco retido na pá frontal ou ejetado em giro
             if r.has_puck_in_scoop:
-                scoop_front_x = r.x + (hl_r - C.SCOOP_DEPTH * 0.5) * cos_t
-                scoop_front_y = r.y + (hl_r - C.SCOOP_DEPTH * 0.5) * sin_t
-                pygame.draw.circle(screen, (46, 213, 115), cm_to_px(scoop_front_x, scoop_front_y), 4)
+                scoop_front_x = r.x + (hl_r - r.scoop_depth * 0.5) * cos_t
+                scoop_front_y = r.y + (hl_r - r.scoop_depth * 0.5) * sin_t
+                pygame.draw.circle(screen, (46, 213, 115), cm_to_px(scoop_front_x, scoop_front_y), 5)
+            elif r.scoop_ejected:
+                scoop_front_x = r.x + (hl_r + 2.0) * cos_t
+                scoop_front_y = r.y + (hl_r + 2.0) * sin_t
+                pygame.draw.circle(screen, (255, 75, 75), cm_to_px(scoop_front_x, scoop_front_y), 6, 2)
 
         # Desenha o Mini Puck Oficial de Hockey (preto/cinza escuro com borda refletiva)
         px_px, py_px = cm_to_px(puck.x, puck.y)
@@ -417,21 +465,89 @@ def run_hockey_gui() -> None:
         pygame.draw.circle(screen, (220, 230, 245), (px_px, py_px), pr_px, 2)
         pygame.draw.circle(screen, (45, 55, 70), (px_px, py_px), max(2, pr_px // 2))
 
+        # --- RETÍCULAS DE RASTREAMENTO DA VISÃO COMPUTACIONAL & KALMAN OVERLAY ---
+        if show_vision_overlay and hasattr(env, "vision_sensor"):
+            vs = env.vision_sensor
+            # Rastreamento dos 6 Robôs na arena
+            for idx_r, r in enumerate(env.engine.all_robots):
+                tracked_state = vs.tracked_robots.get(idx_r)
+                if tracked_state is None:
+                    continue
+
+                kf_px, kf_py = cm_to_px(tracked_state.x, tracked_state.y)
+                conf = tracked_state.confidence
+                role_char = ["A", "D", "G"][r.role_id % 3]
+                team_prefix = "Azul" if r.team == 0 else "Verm"
+
+                # Status de acordo com o nível de confiança do rastreador
+                if conf >= 0.85:
+                    box_col = (46, 213, 115)  # Verde: Rastreamento firme das marcas
+                    status_lbl = f"{role_char} {int(conf * 100)}%"
+                elif conf >= 0.40:
+                    box_col = (255, 175, 45)  # Âmbar: Oclusão parcial / Predição Kalman
+                    status_lbl = f"{role_char} KF {int(conf * 100)}%"
+                else:
+                    box_col = (255, 75, 75)   # Vermelho: Oclusão crítica por colisão
+                    status_lbl = f"{role_char} OCL"
+
+                box_sz = int(C.HALF_ROBOT_L * 2 * scale * 1.15)
+                b_rect = pygame.Rect(kf_px - box_sz // 2, kf_py - box_sz // 2, box_sz, box_sz)
+                c_len = max(6, box_sz // 4)
+
+                # Cantoneiras de tracking OpenCV / ArUco
+                pygame.draw.line(screen, box_col, (b_rect.left, b_rect.top), (b_rect.left + c_len, b_rect.top), 2)
+                pygame.draw.line(screen, box_col, (b_rect.left, b_rect.top), (b_rect.left, b_rect.top + c_len), 2)
+                pygame.draw.line(screen, box_col, (b_rect.right, b_rect.top), (b_rect.right - c_len, b_rect.top), 2)
+                pygame.draw.line(screen, box_col, (b_rect.right, b_rect.top), (b_rect.right, b_rect.top + c_len), 2)
+                pygame.draw.line(screen, box_col, (b_rect.left, b_rect.bottom), (b_rect.left + c_len, b_rect.bottom), 2)
+                pygame.draw.line(screen, box_col, (b_rect.left, b_rect.bottom), (b_rect.left, b_rect.bottom - c_len), 2)
+                pygame.draw.line(screen, box_col, (b_rect.right, b_rect.bottom), (b_rect.right - c_len, b_rect.bottom), 2)
+                pygame.draw.line(screen, box_col, (b_rect.right, b_rect.bottom), (b_rect.right, b_rect.bottom - c_len), 2)
+
+                # Vetor de velocidade estimado pelo Kalman
+                if math.hypot(tracked_state.vx, tracked_state.vy) > 6.0:
+                    vel_end = cm_to_px(
+                        tracked_state.x + tracked_state.vx * 0.14,
+                        tracked_state.y + tracked_state.vy * 0.14,
+                    )
+                    pygame.draw.line(screen, box_col, (kf_px, kf_py), vel_end, 1)
+
+                lbl_surf = font_small.render(status_lbl, True, box_col)
+                screen.blit(lbl_surf, (b_rect.left, b_rect.top - 14))
+
+            # Rastreamento do Disco (Puck)
+            p_state = vs.tracked_puck
+            pk_px, pk_py = cm_to_px(p_state.x, p_state.y)
+            p_conf = p_state.confidence
+            p_col = (46, 213, 115) if p_conf >= 0.85 else ((255, 175, 45) if p_conf >= 0.40 else (255, 75, 75))
+            p_rad = max(9, int(C.PUCK_RADIUS * scale * 1.5))
+            pygame.draw.circle(screen, p_col, (pk_px, pk_py), p_rad, 1)
+            pygame.draw.line(screen, p_col, (pk_px - p_rad - 3, pk_py), (pk_px + p_rad + 3, pk_py), 1)
+            pygame.draw.line(screen, p_col, (pk_px, pk_py - p_rad - 3), (pk_px, pk_py + p_rad + 3), 1)
+            p_lbl_txt = f"PUCK {int(p_conf * 100)}%" if p_state.tracked else "PUCK (NA PÁ/OCL)"
+            p_lbl = font_small.render(p_lbl_txt, True, p_col)
+            screen.blit(p_lbl, (pk_px + p_rad + 4, pk_py - 6))
+
         # Seta do Peteleco com botão direito
         if flick_start is not None and flick_curr is not None:
             pygame.draw.line(screen, (255, 75, 85), flick_start, flick_curr, 3)
             pygame.draw.circle(screen, (255, 75, 85), flick_curr, 6)
 
-        # Telemetria da arena no rodapé
+        # Telemetria da arena no rodapé para Hockey 3v3
         p_speed = math.hypot(puck.vx, puck.vy)
-        r0 = env.engine.blue_robots[0]
+        b_robs = env.engine.blue_robots
+        r0 = b_robs[0]
+        r1 = b_robs[1]
+        r2 = b_robs[2]
+        has_scoop = any(r.has_puck_in_scoop for r in b_robs)
         foot1 = (
-            f"Disco (Puck): ({puck.x:+5.1f}, {puck.y:+5.1f}) cm | Vel: {p_speed:5.1f} cm/s | "
-            f"Atrito Coulomb (μ_k): {env.engine.friction_mu:.2f} | Na Pá (Scoop): {'SIM' if r0.has_puck_in_scoop else 'NÃO'}"
+            f"Hockey 3v3 | Disco: ({puck.x:+5.1f}, {puck.y:+5.1f}) cm | Vel: {p_speed:5.1f} cm/s | "
+            f"Atrito μ_k={env.engine.friction_mu:.2f} | Posse Azul: {'SIM' if has_scoop else 'NÃO'}"
         )
         foot2 = (
-            f"Robô Azul (Vespa ESP32): ({r0.x:+5.1f}, {r0.y:+5.1f}) cm | θ={math.degrees(r0.theta):+5.1f}° | "
-            f"Rodas (vL, vR)=({r0.v_left:+5.0f}, {r0.v_right:+5.0f}) cm/s  [Botão Dir: Peteleco]"
+            f"Time Azul: Atacante A({r0.x:+4.0f}, {r0.y:+4.0f}) | "
+            f"Ala D({r1.x:+4.0f}, {r1.y:+4.0f}) | Goleiro G({r2.x:+4.0f}, {r2.y:+4.0f}) | "
+            f"BLE: {env.engine.ble_latency_ms:4.1f}ms"
         )
         screen.blit(font_small.render(foot1, True, (190, 210, 235)), (28, 680))
         screen.blit(font_small.render(foot2, True, (125, 230, 170)), (28, 704))
@@ -452,6 +568,7 @@ def run_hockey_gui() -> None:
 
         screen.blit(font_sub.render("AÇÕES RÁPIDAS DE RINGUE", True, (200, 220, 245)), (782, 220))
         btn_faceoff.draw(screen, font_body)
+        btn_vision.draw(screen, font_body, active=show_vision_overlay)
         btn_save_ckpt.draw(screen, font_body)
 
         # Gráfico de evolução de recompensa PPO
@@ -484,7 +601,7 @@ def run_hockey_gui() -> None:
                 (830, 388),
             )
 
-        # Painel de Fase Cognitiva do Hockey
+        # Painel de Fase Cognitiva do Hockey & Percepção de Visão
         phase_rect = pygame.Rect(782, 508, 492, 220)
         pygame.draw.rect(screen, (15, 20, 28), phase_rect, border_radius=8)
         pygame.draw.rect(screen, (55, 72, 98), phase_rect, width=1, border_radius=8)
@@ -503,42 +620,60 @@ def run_hockey_gui() -> None:
             p_title = "FASE 4: Finalização Cirúrgica (Curva rápida, tabela e gol!)"
             p_col = (75, 235, 145)
 
-        screen.blit(font_sub.render(p_title, True, p_col), (792, 518))
+        screen.blit(font_sub.render(p_title, True, p_col), (792, 516))
         screen.blit(
             font_small.render(
                 f"Passos PPO: {trainer.total_steps:,}  |  Updates: {trainer.updates_count}  |  Loss: {trainer.last_loss:.4f}",
                 True,
                 (210, 225, 245),
             ),
-            (792, 550),
+            (792, 538),
         )
+
+        # Telemetria ao vivo da visão computacional e tracking de marcas
+        vs = env.vision_sensor
+        r0_t, r0_c = vs.tracked_robots[0].tracked, int(vs.tracked_robots[0].confidence * 100)
+        r1_t, r1_c = vs.tracked_robots[1].tracked, int(vs.tracked_robots[1].confidence * 100)
+        r2_t, r2_c = vs.tracked_robots[2].tracked, int(vs.tracked_robots[2].confidence * 100)
+        pk_t, pk_c = vs.tracked_puck.tracked, int(vs.tracked_puck.confidence * 100)
+
+        s0 = f"A[{'OK' if r0_t else 'KF'} {r0_c}%]"
+        s1 = f"D[{'OK' if r1_t else 'KF'} {r1_c}%]"
+        s2 = f"G[{'OK' if r2_t else 'KF'} {r2_c}%]"
+        spk = f"Puck[{'OK' if pk_t else 'SCOOP'} {pk_c}%]"
+
         screen.blit(
             font_small.render(
-                f"Comando Rodas (u_L, u_R): ({last_act[0]:+5.2f}, {last_act[1]:+5.2f})  |  Velocidade: {speed_mult}x",
+                f"Visão Zenital (Câmera + Kalman): {s0}  {s1}  {s2}  {spk}",
                 True,
-                (175, 195, 220),
+                (70, 235, 160) if show_vision_overlay else (140, 150, 165),
             ),
-            (792, 574),
+            (792, 560),
+        )
+
+        screen.blit(
+            font_small.render("Pipeline Sim-to-Real (Visão Parcial -> Kalman -> RL -> BLE):", True, (255, 160, 90)),
+            (792, 586),
         )
         screen.blit(
-            font_small.render("Peculiaridades Físicas Alinhadas ao Carrinho Real:", True, (255, 160, 90)),
-            (792, 606),
+            font_small.render("• Marcas no Chassi: Proa (LED Branco +4.5cm) + Popa (Cor Papel -4.5cm)", True, (185, 205, 230)),
+            (792, 608),
         )
         screen.blit(
-            font_small.render("• Disco desliza com desaceleração de Coulomb e para com atrito estático", True, (185, 205, 230)),
+            font_small.render("• Oclusões em colisões tratadas com predição cinemática por Filtro Kalman", True, (185, 205, 230)),
             (792, 628),
         )
         screen.blit(
-            font_small.render("• Pá frontal côncava (scoop) retém o puck para condução e arremesso", True, (185, 205, 230)),
-            (792, 650),
+            font_small.render("• Disco na pá côncava: retenção mecânica e ejeção por giro rápido (>6.2 rad/s)", True, (185, 205, 230)),
+            (792, 648),
         )
         screen.blit(
-            font_small.render("• Inércia de motor DC (35ms) e latência BLE já simuladas para Sim-to-Real", True, (185, 205, 230)),
-            (792, 672),
+            font_small.render("• Comunicação Vespa BLE (30Hz) com compensação de deadband dos motores (12%)", True, (120, 235, 165)),
+            (792, 668),
         )
         screen.blit(
-            font_small.render("• No modo App Joystick (WASD): sinta o controle idêntico ao app da RoboCore!", True, (120, 235, 165)),
-            (792, 694),
+            font_small.render("• Pressione 'App Joystick' para pilotar no teclado (WASD / Espaço para girar)", True, (160, 200, 240)),
+            (792, 690),
         )
 
         pygame.display.flip()
