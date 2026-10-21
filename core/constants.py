@@ -1,116 +1,232 @@
+"""Versioned profiles. Units: centimetres, grams, seconds.
+
+Rules are limits. The stock robot combines manufacturer specifications with
+photo-derived geometry and uncalibrated dynamics; see docs/HOCKEYBOT_STOCK.md.
 """
-Constantes físicas oficiais do robô de hockey RoboCore (classe 1lb / HockeyBot / Falcon)
-e especificações do ringue de hockey com cantos arredondados.
-Todas as grandezas espaciais em centímetros (cm), massas em gramas (g) e tempo em segundos (s).
-"""
+
+from dataclasses import asdict, dataclass
+import math
+
+RULES_SOURCE = "https://robocore-eventos.s3.sa-east-1.amazonaws.com/public/RoboCore_Hockey_Rules.pdf"
+
+
+@dataclass(frozen=True)
+class ArenaConfig:
+    name: str = "micro-2024"
+    length: float = 300.0
+    width: float = 150.0
+    corner_radius: float = 12.5
+    goal_width: float = 52.0
+    goal_height: float = 18.0
+    goal_depth: float = 12.0  # Assumed depth, NOT the opening height.
+    puck_diameter: float = 3.17
+    puck_thickness: float = 1.27
+    puck_mass: float = 15.0  # Weigh the actual puck.
+    match_seconds: float = 300.0
+    rules_revision: str = "2024-01-15"
+    source: str = RULES_SOURCE
+
+    def __post_init__(self):
+        if not all(
+            math.isfinite(v)
+            for v in (
+                self.length,
+                self.width,
+                self.corner_radius,
+                self.goal_width,
+                self.goal_depth,
+                self.goal_height,
+                self.puck_diameter,
+                self.puck_thickness,
+                self.puck_mass,
+                self.match_seconds,
+            )
+        ):
+            raise ValueError("Physical parameters must be finite")
+        if (
+            min(
+                self.length,
+                self.width,
+                self.corner_radius,
+                self.goal_width,
+                self.goal_depth,
+                self.puck_diameter,
+                self.puck_mass,
+                self.match_seconds,
+            )
+            <= 0
+        ):
+            raise ValueError("Dimensions, duration and mass must be positive")
+        if 2 * self.corner_radius >= min(self.length, self.width):
+            raise ValueError("Corner radius exceeds arena")
+        if self.goal_width >= self.width - 2 * self.corner_radius:
+            raise ValueError("Goal must fit the straight end wall")
+
+    @property
+    def half_length(self):
+        return self.length / 2
+
+    @property
+    def half_width(self):
+        return self.width / 2
+
+    @property
+    def puck_radius(self):
+        return self.puck_diameter / 2
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RobotConfig:
+    model: str = "robocore-hockeybot-stock-photo-v1"
+    length: float = 16.4  # Assembled envelope, estimated from photographs.
+    width: float = 14.4
+    mass: float = 360.0  # Manufacturer's approximate assembled mass.
+    track: float = 11.8  # Tyre centre to tyre centre, photo estimate.
+    axle_x: float = -5.2
+    skid_x: float = 6.8
+    skid_track: float = 11.4  # Equivalent floor contacts on the two front forks.
+    wheel_diameter: float = 6.0
+    wheel_width: float = 2.0
+    tire_mass: float = 13.0  # Each tyre only; hubs belong to residual mass.
+    motor_free_rpm: float = 266.0
+    motor_stall_torque_kgf_cm: float = 1.0
+    motor_tau: float = 0.12
+    tire_friction: float = 0.85
+    skid_friction: float = 0.08
+    deadband: float = 0.12
+    inertia: float | None = None
+    provenance: str = (
+        "RoboCore stock: published mass/tyres/motor; estimated photo geometry; uncalibrated dynamics"
+    )
+
+    @property
+    def max_wheel_speed(self):
+        """Theoretical no-load speed at 6 V, NOT measured speed on the floor."""
+        return math.pi * self.wheel_diameter * self.motor_free_rpm / 60
+
+    @property
+    def wheel_load_fraction(self):
+        """Static support estimate with the assumed mass centre at the origin."""
+        return self.skid_x / (self.skid_x - self.axle_x)
+
+    def __post_init__(self):
+        values = (
+            self.length,
+            self.width,
+            self.mass,
+            self.track,
+            self.axle_x,
+            self.skid_x,
+            self.skid_track,
+            self.wheel_diameter,
+            self.wheel_width,
+            self.tire_mass,
+            self.motor_free_rpm,
+            self.motor_stall_torque_kgf_cm,
+            self.max_wheel_speed,
+            self.motor_tau,
+            self.tire_friction,
+            self.skid_friction,
+            self.deadband,
+        )
+        if not all(math.isfinite(v) for v in values) or min(self.tire_friction, self.skid_friction) < 0:
+            raise ValueError("Invalid physical parameter")
+        if self.inertia is not None and (not math.isfinite(self.inertia) or self.inertia <= 0):
+            raise ValueError("Inertia must be positive and finite")
+        if not 0 < self.length <= 20 or not 0 < self.width <= 20 or not 0 < self.mass <= 454:
+            raise ValueError("Micro robot: maximum 20 x 20 cm and 454 g")
+        if not 0 < self.track <= self.width or self.motor_tau <= 0 or self.max_wheel_speed <= 0:
+            raise ValueError("Invalid drivetrain")
+        if not 0 <= self.deadband < 1 or self.axle_x >= self.skid_x:
+            raise ValueError("Invalid deadband/support points")
+        if (
+            min(
+                self.wheel_diameter,
+                self.wheel_width,
+                self.tire_mass,
+                self.motor_free_rpm,
+                self.motor_stall_torque_kgf_cm,
+            )
+            <= 0
+        ):
+            raise ValueError("Invalid wheel/motor specification")
+        if (
+            self.track + self.wheel_width > self.width
+            or abs(self.axle_x) + self.wheel_diameter / 2 > self.length / 2 + 1e-9
+        ):
+            raise ValueError("Wheels exceed assembled envelope")
+        if 2 * self.tire_mass >= self.mass or not self.axle_x < 0 < self.skid_x <= self.length / 2:
+            raise ValueError("Invalid mass distribution/support points")
+        if not 0 < self.skid_track < self.width:
+            raise ValueError("Invalid front support spacing")
+
+
+@dataclass(frozen=True)
+class SimulationConfig:
+    control_hz: int = 30
+    physics_hz: int = 240
+    puck_friction: float = 0.08
+    restitution: float = 0.55
+    radio_latency: float = 0.03
+    radio_jitter: float = 0.01
+    packet_loss: float = 0.02
+    watchdog_seconds: float = 0.20
+    vision_latency: float = 1 / 30
+    vision_noise: float = 0.18
+    vision_dropout: float = 0.025
+
+    def __post_init__(self):
+        if self.physics_hz <= 0 or not 0 <= self.restitution <= 1 or self.watchdog_seconds <= 0:
+            raise ValueError("Invalid solver or watchdog configuration")
+        if self.control_hz <= 0 or self.physics_hz % self.control_hz:
+            raise ValueError("Physics frequency must be a multiple of control frequency")
+        if not 0 <= self.packet_loss < 1 or not 0 <= self.vision_dropout < 1:
+            raise ValueError("Invalid loss probability")
+        if (
+            min(
+                self.radio_latency,
+                self.radio_jitter,
+                self.vision_latency,
+                self.vision_noise,
+                self.puck_friction,
+            )
+            < 0
+        ):
+            raise ValueError("Noise, friction and delays must be nonnegative")
+
+
+PROFILES = {
+    "micro-2024": ArenaConfig(),
+    "micro-large": ArenaConfig(name="micro-large", length=366.0, width=183.0, corner_radius=15.0),
+    "tabletop": ArenaConfig(
+        name="tabletop",
+        length=180.0,
+        width=120.0,
+        corner_radius=20.0,
+        goal_width=35.0,
+        puck_diameter=5.0,
+        puck_mass=38.0,
+        puck_thickness=1.4,
+        match_seconds=180.0,
+        rules_revision="custom",
+        source="practice table; not competition rules",
+    ),
+}
 
 
 class HockeyConstants:
-    # --- DIMENSÕES DO RINGUE / ARENA ---
-    ARENA_LENGTH: float = 180.0       # Comprimento total da arena (cm)
-    ARENA_WIDTH: float = 120.0        # Largura total da arena (cm)
-    HALF_LENGTH: float = 90.0         # X in [-90.0, +90.0] cm
-    HALF_WIDTH: float = 60.0          # Y in [-60.0, +60.0] cm
-    CORNER_RADIUS: float = 20.0       # Raio de curvatura dos 4 cantos arredondados (cm)
+    """Compatibility aliases for the default profile. New code uses configs."""
 
-    # --- REGRAS DE EQUIPE OFICIAIS (HOCKEY 3v3) ---
-    ROBOTS_PER_TEAM: int = 3          # Partida oficial é sempre 3v3 (3 robôs por time, 6 na arena)
-    ROLE_STRIKER: int = 0             # 0 = Atacante (busca o disco, conduz e arremata)
-    ROLE_DEFENDER: int = 1            # 1 = Ala / Defensor (cobertura intermediária e apoio)
-    ROLE_GOALIE: int = 2              # 2 = Goleiro (proteção da pequena área e rebatida)
-
-    # --- DIMENSÕES DOS GOLS ---
-    GOAL_WIDTH: float = 35.0          # Largura da baliza (cm)
-    HALF_GOAL_WIDTH: float = 17.5     # Y in [-17.5, +17.5] cm
-    GOAL_DEPTH: float = 12.0          # Profundidade da rede (cm)
-    GOAL_AREA_RADIUS: float = 25.0    # Semicírculo de proteção da pequena área
-
-    # --- ESPECIFICAÇÕES DO CARRINHO FÍSICO ROBOCORE (HOCKEYBOT / CLASSE 1LB) ---
-    ROBOT_WIDTH: float = 17.0         # Largura do chassi (17 cm conforme regulamento)
-    ROBOT_LENGTH: float = 16.0        # Comprimento do chassi (16 cm conforme regulamento)
-    HALF_ROBOT_W: float = 8.5         # Semi-largura
-    HALF_ROBOT_L: float = 8.0         # Semi-comprimento
-    ROBOT_HEIGHT: float = 5.0         # Altura do chassi
-    ROBOT_MASS: float = 454.0         # Peso exato de 1 libra (454 gramas)
-    WHEELBASE: float = 14.5           # Distância entre rodas de tração (cm)
-    WHEEL_DIAMETER: float = 6.5       # Diâmetro das rodas de borracha
-    MAX_WHEEL_SPEED: float = 85.0     # Velocidade linear máxima das rodas (~0.85 m/s)
-    MOTOR_TAU: float = 0.035          # Inércia/atraso do motor DC + ponte H da Vespa (35 ms)
-
-    # Pá frontal côncava (perfil de retenção do disco)
-    SCOOP_DEPTH: float = 2.2          # Profundidade do rebaixo da pá frontal (cm)
-    SCOOP_WIDTH: float = 11.0         # Largura útil da área da pá frontal (cm)
-
-    # --- PROPRIEDADES DE MASSA E INÉRCIA REAIS DERIVADAS DO CAD FUSION 360 ---
-    # Limite oficial: 454.0 g (1.000 lb)
-    ROBOT_MASS: float = 454.0
-
-    # Posições de apoio no piso (cm em relação ao centro geométrico)
-    AXLE_X_POS: float = -2.5           # Eixo das rodas tratoras
-    SKID_X_POS: float = 6.8            # Patim frontal de apoio deslizante
-    AXLE_SKID_DIST: float = 9.3        # Distância entre eixo e patim (6.8 - (-2.5))
-    SKID_FRICTION_COEFF: float = 0.12  # Coeficiente de atrito do patim de Teflon/UHMW no piso
-    COM_Z_HEIGHT: float = 2.38         # Altura do centro de gravidade em relação ao piso (cm)
-
-    # Inércia rotacional I_zz calculada via Teorema dos Eixos Paralelos (Steiner) no CAD
-    ROBOT_INERTIA: float = 13650.0      # Média geral (g*cm^2)
-    ROBOT_INERTIA_STRIKER: float = 13787.0
-    ROBOT_INERTIA_DEFENDER: float = 13483.0
-    ROBOT_INERTIA_GOALIE: float = 13672.0
-
-    # CoM longitudinal e fração de distribuição de carga estática nas rodas por papel
-    COM_X_STRIKER: float = 0.024       # Avanço de massa para a pá frontal
-    COM_X_DEFENDER: float = -0.237     # Centro neutro balanceado
-    COM_X_GOALIE: float = -0.374       # Recuo de massa para as rodas de tração
-    WHEEL_LOAD_STRIKER: float = 0.729  # 72.9% nas rodas, 27.1% no patim/pá
-    WHEEL_LOAD_DEFENDER: float = 0.757 # 75.7% nas rodas, 24.3% no patim
-    WHEEL_LOAD_GOALIE: float = 0.771   # 77.1% nas rodas, 22.9% no patim
-
-    # --- ESPECIFICAÇÕES DO PUCK (MINI PUCK DE HOCKEY OFICIAL) ---
-    PUCK_DIAMETER: float = 5.0        # Diâmetro do disco oficial (5.0 cm)
-    PUCK_RADIUS: float = 2.5          # Raio do disco (2.5 cm)
-    PUCK_MASS: float = 38.0           # Massa aproximada do mini puck (38 g)
-    PUCK_THICKNESS: float = 1.4       # Espessura (1.4 cm)
-
-    # --- FÍSICA DE CONTATO E ATRITO SECO (COULOMB) ---
-    GRAVITY: float = 981.0            # Aceleração gravitacional (cm/s^2)
-    # Coeficiente de atrito cinético de deslizamento do disco no piso (MDF/vinil/acrílico)
-    PUCK_SLIDING_FRICTION: float = 0.20
-    PUCK_STATIC_FRICTION: float = 0.28  # Atrito estático necessário para tirar o disco do repouso
-    PUCK_STOP_SPEED: float = 1.5      # Limite abaixo do qual o atrito estático trava o puck (cm/s)
-    PUCK_WALL_RESTITUTION: float = 0.72 # Restituição elástica do puck nas paredes de acrílico/MDF
-    ROBOT_PUCK_RESTITUTION: float = 0.65# Restituição no impacto com o chassi
-
-    # --- FIDELIDADE ELETROMECÂNICA DO CHASSI ROBOCORE (PLACA VESPA / ESP32) ---
-    # Zona morta típica da ponte H e caixa de redução dos motores DC N20/25GA (~10-14% PWM mínimo)
-    MOTOR_DEADBAND: float = 0.12
-    # Coeficiente de atrito borracha-piso que limita a tração e gera derrapagem (wheel slip)
-    TIRE_FRICTION_COEFF: float = 0.85
-    TIRE_SLIP_FRICTION: float = 0.58  # Coeficiente cinético quando as rodas já estão derrapando
-    # Aceleração angular crítica onde a força centrífuga ejeta o puck da pá frontal côncava
-    SCOOP_EJECTION_OMEGA: float = 6.2  # rad/s (~355 graus/s)
-
-    # --- CANAL DE COMUNICAÇÃO BLUETOOTH BLE (ESP32) & SIM-TO-REAL ---
-    BLE_CONNECTION_INTERVAL: float = 0.030  # Intervalo médio de conexão BLE (~30 ms)
-    BLE_JITTER_MAX: float = 0.012           # Jitter de transporte de rádio (+-12 ms)
-    BLE_PACKET_LOSS_PROB: float = 0.025     # Taxa de perda/retransmissão de pacote em 2.4 GHz
-    BLE_WATCHDOG_TIMEOUT: float = 0.200     # Timeout do watchdog no ESP32: corta motores se sem dados
-    BLE_CONTROL_RATE_HZ: float = 30.0       # Taxa de envio de pacotes BLE ideal do ESP32 (30 Hz)
-
-    # --- PIPELINE DE VISÃO ZENITAL PARCIAL & MARCAS NO CHASSI ---
-    VISION_LATENCY_STEPS: int = 2           # Atraso de 2 quadros a 60 FPS (~33 ms de processamento)
-    VISION_POS_NOISE_STD: float = 0.35      # Ruído de leitura de centróide da câmera (cm)
-    VISION_ANGLE_NOISE_STD: float = 0.030   # Ruído de orientação angular (rad, ~1.7 graus)
-    VISION_DROPOUT_PROB: float = 0.035      # Taxa de perda temporária de frame/tracking (3.5%)
-    VISION_COLLISION_OCCLUSION_PROB: float = 0.15 # Chance de oclusão parcial em choques corpo a corpo
-    VISION_PUCK_OCCLUSION_DIST: float = 11.0 # Distância na qual o disco entra sob a pá e pode sofrer oclusão parcial
-    VISION_CONFIDENCE_DECAY: float = 0.88   # Decaimento de confiança em caso de perda de tracking
-
-    # Especificações das marcas físicas fixadas no teto do chassi (17x16 cm)
-    MARKER_FRONT_OFFSET: float = 4.5        # Ponto de proa/orientação frontal (cm)
-    MARKER_REAR_OFFSET: float = -4.5        # Ponto de popa/papel tático (cm)
-    MARKER_RADIUS: float = 1.8              # Raio do adesivo circular / tag visual no teto (cm)
-
-    # Simulação a 60 FPS
-    DT: float = 1.0 / 60.0
-    MATCH_TIME_SECONDS: float = 180.0 # Partida oficial de 3 minutos
+    ARENA_LENGTH, ARENA_WIDTH = 300.0, 150.0
+    HALF_LENGTH, HALF_WIDTH = 150.0, 75.0
+    CORNER_RADIUS, GOAL_WIDTH, HALF_GOAL_WIDTH, GOAL_DEPTH = 12.5, 52.0, 26.0, 12.0
+    ROBOTS_PER_TEAM = 3
+    ROLE_STRIKER, ROLE_DEFENDER, ROLE_GOALIE = 0, 1, 2
+    ROBOT_LENGTH, ROBOT_WIDTH, ROBOT_MASS = 16.4, 14.4, 360.0
+    HALF_ROBOT_L, HALF_ROBOT_W = 8.2, 7.2
+    WHEELBASE, MAX_WHEEL_SPEED, GRAVITY = 11.8, RobotConfig().max_wheel_speed, 981.0
+    PUCK_DIAMETER, PUCK_RADIUS, PUCK_SLIDING_FRICTION = 3.17, 1.585, 0.08
+    DT, MATCH_TIME_SECONDS, BLE_CONTROL_RATE_HZ = 1 / 30, 300.0, 30.0

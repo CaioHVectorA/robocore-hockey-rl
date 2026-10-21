@@ -1,0 +1,12 @@
+{
+  "profile": "micro-2024",
+  "camera": 0,
+  "team": 0,
+  "floor_corners_px": [[80, 80], [1200, 80], [1200, 640], [80, 640]],
+  "capture_delay_seconds": 0.04,
+  "transport": "robocore-stock",
+  "puck_hsv_lower": [0, 0, 0],
+  "puck_hsv_upper": [179, 255, 65],
+  "ble_addresses": ["REPLACE_WITH_BLUE_0_ADDRESS", "REPLACE_WITH_BLUE_1_ADDRESS", "REPLACE_WITH_BLUE_2_ADDRESS"],
+  "protocol_verified": false
+}

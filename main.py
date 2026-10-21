@@ -1,5 +1,5 @@
 """
-Launcher da Central Gráfica do Hockey de Robôs RoboCore (Classe 1lb / HockeyBot).
+Launcher do Hockey Lab, com perfis de competição e mesa de treino.
 Execute:
     python main.py
 """
@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui.hockey_gui import run_hockey_gui
+from ui.hockey_gui import main
 
 if __name__ == "__main__":
-    run_hockey_gui()
+    main()
