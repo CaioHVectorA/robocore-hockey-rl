@@ -50,13 +50,20 @@ class TrainingConfig:
     selfplay_pool_size: int = 6
     selfplay_anchor_probability: float = 0.2
     evaluation_suite: bool = False
+    curriculum_eval_gate: bool = False
+    stagnation_patience: int = 0  # Consecutive episodes without active success; 0 disables.
 
     def __post_init__(self):
         if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 120:
             raise ValueError("Nome da sessão: de 1 a 120 caracteres")
         if any(
             type(value) is not bool
-            for value in (self.domain_randomization, self.random_heading, self.evaluation_suite)
+            for value in (
+                self.domain_randomization,
+                self.random_heading,
+                self.evaluation_suite,
+                self.curriculum_eval_gate,
+            )
         ):
             raise ValueError("Variações físicas e orientação aleatória devem ser booleanas")
         if self.profile not in PROFILES or self.objective not in ("score", "reach"):
@@ -67,6 +74,10 @@ class TrainingConfig:
             raise ValueError("Cenário 1v1 exige exatamente um robô de cada time")
         if self.evaluation_suite and self.opponent_robots == 0:
             raise ValueError("Suíte de adversários exige robôs vermelhos")
+        if self.curriculum_eval_gate and self.scenario != "solo_curriculum":
+            raise ValueError("Validação de etapa exige o currículo solo")
+        if type(self.stagnation_patience) is not int or self.stagnation_patience < 0:
+            raise ValueError("Paciência por estagnação deve ser um inteiro >= 0")
         if self.scenario == "solo_curriculum" and (
             self.robots_per_team != 1
             or self.opponent_robots != 0
@@ -193,6 +204,7 @@ PRESET_LABELS = {
     "defending": "1v1 · defesa",
     "tactical": "3v3 · bot tático",
     "duel_selfplay": "1v1 · self-play",
+    "solo_foundation": "Solo · reconstruir habilidades",
 }
 
 
@@ -205,6 +217,8 @@ def preset_config(name, base=None):
         reward=RewardConfig(),
         random_heading=True,
         evaluation_suite=False,
+        curriculum_eval_gate=False,
+        stagnation_patience=0,
     )
     options = {
         "selfplay": dict(robots_per_team=3, opponent_robots=3, opponent="selfplay", scenario="faceoff"),
@@ -227,6 +241,33 @@ def preset_config(name, base=None):
             eval_episodes=6,
             evaluation_suite=True,
             steps=1000000,
+            stagnation_patience=200,
+        ),
+        "solo_foundation": dict(
+            robots_per_team=1,
+            opponent_robots=0,
+            opponent="none",
+            scenario="solo_curriculum",
+            profile="micro-practice",
+            steps=300000,
+            envs=8,
+            rollout=256,
+            batch_size=512,
+            episode_seconds=15.0,
+            gamma=0.999,
+            entropy_coef=0.01,
+            eval_every=10,
+            eval_episodes=10,
+            curriculum_eval_gate=True,
+            stagnation_patience=200,
+            reward=RewardConfig(
+                approach=2.0,
+                alignment=1.0,
+                first_touch=1.0,
+                carry=3.0,
+                energy_penalty=0.0002,
+                idle_penalty=0.003,
+            ),
         ),
         "solo_curriculum": dict(
             robots_per_team=1,

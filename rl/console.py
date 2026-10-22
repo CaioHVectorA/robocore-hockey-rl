@@ -50,6 +50,10 @@ class ConsoleReporter:
                 flush=True,
             )
             curriculum = data.get("curriculum")
+            if data.get("stop_reason") == "stagnation":
+                print(
+                    "  Parada por estagnacao: episodios sem sucesso ativo; checkpoint preservado.", flush=True
+                )
             if curriculum:
                 print(
                     f"  Curriculo: {curriculum['label']} | sucesso {curriculum['success_rate']:.0%} / meta {curriculum['threshold']:.0%} | episodios {curriculum['recent_count']} (minimo {curriculum['minimum']})",
@@ -64,6 +68,15 @@ class ConsoleReporter:
                 flush=True,
             )
             parts = data.get("mean_reward_components")
+            activity = data.get("participation")
+            if activity:
+                print(
+                    f"  Participacao: toque em {activity['touch_episode_rate']:.0%} dos episodios | "
+                    f"sucesso ativo {activity['active_success_rate']:.0%} | "
+                    f"inativo {activity['mean_idle_fraction']:.0%} | "
+                    f"distancia media {activity['mean_distance_to_puck']:.1f} cm",
+                    flush=True,
+                )
             if parts:
                 print(
                     "  Retorno medio por componente: "

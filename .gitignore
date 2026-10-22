@@ -11,6 +11,7 @@ checkpoints/*.pt
 !checkpoints/poc-solo-20261021.pt
 !checkpoints/duel-selfplay-20261021.pt
 !checkpoints/duel-selfplay-20261021.best.pt
+!checkpoints/foundation-candidate-20261022.pt
 checkpoints/*.tmp
 runs/
 .codex-remote-attachments/

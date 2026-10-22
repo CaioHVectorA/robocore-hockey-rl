@@ -24,6 +24,8 @@ Para treinar um robô sozinho a buscar o disco e levar ao gol, selecione **Solo 
 
 **Solo · progressivo até o gol** oferece um currículo próprio: finalizar perto do gol, conduzir e depois buscar de qualquer direção e marcar. Avança conforme o sucesso, mantendo as recompensas fixas. Usa `micro-practice`, com gols recuados em três paredes inspirados na referência da pista, dentro de uma área de jogo de 300 × 150 cm. [Medidas, recompensas e critérios de promoção](docs/ARENA_AND_SOLO_TRAINING.md).
 
+**Solo · reconstruir habilidades** acrescenta alinhamento, primeiro contato único e condução com participação, exige avaliação em seeds separadas antes de avançar e salva/encerra se ficar sem sucesso por duzentos episódios. É o [protocolo de recuperação após a estagnação do 1v1](docs/FOUNDATION_TRAINING.md); seus pesos são candidatos experimentais, não competência já demonstrada.
+
 **1v1 · self-play** treina contra versões congeladas da política em saídas, posições variadas, ataque e defesa. Há histórico de adversários nos checkpoints, avaliação contra bot e política inicial e modo **Humano × PPO** para você controlar o vermelho. A CLI aceita limite de horas/horário e inibição temporária de suspensão para [treino noturno](docs/OVERNIGHT_1V1.md).
 
 **Ver treino ao vivo** acompanha a coleta exploratória. **Avaliar últimos pesos** abre uma simulação independente com pesos congelados. **Pré-visualizar exercício** usa o bot tático e é identificado como prévia. A aba **Simular** preserva controle manual, pausa, arraste, impulso, tracking e replay. **1/2/3** alternam controlador; **P** pausa; **V** tracking; **Tab** seleciona; WASD/setas e espaço controlam o robô na bancada manual.

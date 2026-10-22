@@ -13,6 +13,10 @@ class RewardConfig:
     energy_penalty: float = 0.001
     reach_bonus: float = 10.0
     reach_distance: float = 10.0
+    alignment: float = 0.0
+    first_touch: float = 0.0
+    carry: float = 0.0
+    idle_penalty: float = 0.0
 
     def __post_init__(self):
         if not all(math.isfinite(v) and v >= 0 for v in vars(self).values()):

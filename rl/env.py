@@ -134,6 +134,19 @@ class RoboCoreHockeyEnv(gym.Env):
             )
         )
 
+    def _alignment(self):
+        """Bounded potential: close, behind the puck and facing its target goal."""
+        p, a = self.engine.puck, self.arena
+        gx, gy = a.half_length - p.x, -p.y
+        norm = max(math.hypot(gx, gy), 1e-6)
+        dx, dy = gx / norm, gy / norm
+        return max(
+            max(0.0, ((p.x - r.x) * dx + (p.y - r.y) * dy) / max(math.hypot(p.x - r.x, p.y - r.y), 1e-6))
+            * max(0.0, math.cos(r.theta) * dx + math.sin(r.theta) * dy)
+            * max(0.0, 1 - math.hypot(p.x - r.x, p.y - r.y) / 60)
+            for r in self.engine.blue_robots
+        )
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
@@ -244,10 +257,28 @@ class RoboCoreHockeyEnv(gym.Env):
         self.vision_sensor.update(e, prime=True)
         self.prev_potential = self._potential()
         self.prev_approach = self._approach()
+        self.prev_alignment = self._alignment()
+        self.best_potential = self.prev_potential
+        self.first_touch_paid = False
+        self.last_blue_touch = -math.inf
+        self.idle_duration = 0.0
         self._ended = False
         self.metrics = dict(shots_blue=0, shots_red=0, touches_blue=0, idle_steps=0, tracking_lost_steps=0)
+        self.distance_sum = 0.0
         self.last_reward_components = dict.fromkeys(
-            ("goal", "progress", "approach", "time_penalty", "energy_penalty", "reach_bonus"), 0.0
+            (
+                "goal",
+                "progress",
+                "approach",
+                "time_penalty",
+                "energy_penalty",
+                "reach_bonus",
+                "alignment",
+                "first_touch",
+                "carry",
+                "idle_penalty",
+            ),
+            0.0,
         )
         self.episode_reward_components = dict(self.last_reward_components)
         self._shot_side = 0
@@ -286,6 +317,29 @@ class RoboCoreHockeyEnv(gym.Env):
             self.shaping_gamma * (0.0 if terminated else phi) - self.prev_potential
         )
         pursuit = rc.approach * (self.shaping_gamma * (0.0 if terminated else approach) - self.prev_approach)
+        alignment = self._alignment()
+        alignment_reward = (
+            rc.alignment * (self.shaping_gamma * (0.0 if terminated else alignment) - self.prev_alignment)
+            if self.objective == "score"
+            else 0.0
+        )
+        self.prev_alignment = alignment
+        touched = any(r.touched_puck for r in self.engine.blue_robots)
+        first_touch = touched and not self.first_touch_paid
+        if touched:
+            self.last_blue_touch = self.engine.episode_time
+            self.first_touch_paid = True
+        # Only new episode-wide progress after a recent blue contact is paid.
+        # Moving back and forth or letting red advance cannot farm this bonus.
+        new_progress = max(0.0, phi - self.best_potential)
+        self.best_potential = max(self.best_potential, phi)
+        controlled = (
+            self.engine.episode_time - self.last_blue_touch <= 0.5 and self.engine.puck.last_touch_team == 0
+        )
+        idle = max(math.hypot(r.vx, r.vy) for r in self.engine.blue_robots) < 2.0
+        self.idle_duration = (
+            self.idle_duration + self.engine.dt if idle and distance > 20 and not touched else 0.0
+        )
         self.prev_potential = phi
         self.prev_approach = approach
         energy = rc.energy_penalty * np.mean(np.square(act), axis=1)
@@ -297,13 +351,17 @@ class RoboCoreHockeyEnv(gym.Env):
             time_penalty=-rc.time_penalty,
             energy_penalty=-float(energy.mean()),
             reach_bonus=rc.reach_bonus * reached,
+            alignment=alignment_reward,
+            first_touch=rc.first_touch * first_touch,
+            carry=rc.carry * new_progress * controlled if self.objective == "score" else 0.0,
+            idle_penalty=-rc.idle_penalty if self.idle_duration >= 3 else 0.0,
         )
         reward = sum(value for key, value in components.items() if key != "energy_penalty")
         indiv = reward - energy
         self.last_reward_components = components
         for key, value in components.items():
             self.episode_reward_components[key] += value
-        self.metrics["touches_blue"] += int(any(r.touched_puck for r in self.engine.blue_robots))
+        self.metrics["touches_blue"] += int(touched)
         self.metrics["idle_steps"] += int(max(math.hypot(r.vx, r.vy) for r in self.engine.blue_robots) < 2.0)
         self.metrics["tracking_lost_steps"] += int(
             not all(
@@ -324,6 +382,13 @@ class RoboCoreHockeyEnv(gym.Env):
         info["episode_reward_components"] = dict(self.episode_reward_components)
         info["episode_seconds"] = self.engine.episode_time
         info["distance_to_puck"] = distance
+        self.distance_sum += distance
+        info["mean_distance_to_puck"] = self.distance_sum / self.engine.steps
+        info["idle_fraction"] = self.metrics["idle_steps"] / self.engine.steps
+        info["tracking_lost_fraction"] = self.metrics["tracking_lost_steps"] / self.engine.steps
+        info["blue_participated"] = self.metrics["touches_blue"] > 0
+        info["goal_last_touch_team"] = self.engine.puck.last_touch_team
+        info["active_success"] = bool(reached or (info["goal_scored"] == 1 and info["blue_participated"]))
         info["is_success"] = bool(reached or info["goal_scored"] == 1)
         info["result"] = (
             "success"

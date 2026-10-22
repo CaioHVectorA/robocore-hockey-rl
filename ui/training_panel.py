@@ -48,6 +48,20 @@ REWARD_ROWS = (
         "Distância entre centros para concluir a chegada.",
         "reach",
     ),
+    (
+        "alignment",
+        "Alinhar atrás do disco",
+        "Potencial de proximidade, posição e orientação para o gol.",
+        "score",
+    ),
+    ("first_touch", "Primeiro contato", "Bônus único por episódio; não repete por ficar encostado.", "all"),
+    ("carry", "Condução com participação", "Novo progresso máximo após toque recente do azul.", "score"),
+    (
+        "idle_penalty",
+        "Inatividade longe do disco",
+        "Custo por passo após 3 s abaixo de 2 cm/s, a mais de 20 cm.",
+        "all",
+    ),
 )
 
 
@@ -604,6 +618,8 @@ class TrainingPanel:
 
     def reset_rewards(self):
         preset = "solo_reach" if self.config.objective == "reach" else "solo_goal"
+        if self.config.scenario == "solo_curriculum" and self.config.curriculum_eval_gate:
+            preset = "solo_foundation"
         self._apply(reward=preset_config(preset).reward)
 
     def advanced(self):
@@ -640,6 +656,14 @@ class TrainingPanel:
         self.paragraph(
             "Usa ações determinísticas e seeds reservadas. Durante essa etapa, o campo da coleta permanece parado; o estado aparece abaixo da arena."
         )
+        self.field("Parar após episódios sem sucesso ativo (0 desativa)", "stagnation_patience", int)
+        if self.config.scenario == "solo_curriculum":
+            self.choice(
+                "Exigir avaliação antes de avançar etapa",
+                "curriculum_eval_gate",
+                [True, False],
+                {True: "Coleta e seeds reservadas", False: "Somente sucesso da coleta"},
+            )
         if self.worker.records:
             self.section("Diagnóstico da atualização")
             record = self.worker.records[-1]
@@ -1014,6 +1038,8 @@ class TrainingPanel:
         if stale:
             help_text = "Aguardando novos quadros há mais de 1s. Confira o estado da sessão e o diagnóstico."
         curriculum = self.worker.status.get("curriculum")
+        if self.worker.status.get("stop_reason") == "stagnation":
+            help_text = "Treino interrompido por estagnação: episódios sem sucesso ativo. Pesos salvos; revise o exercício."
         if live and phase == "running" and curriculum:
             help_text = f"{curriculum['label']} · sucesso {curriculum['success_rate']:.0%} / meta {curriculum['threshold']:.0%} · {curriculum['recent_count']} episódios (mín. {curriculum['minimum']})"
         self.text(help_text, rect.x + 12, rect.y + 78, 12, MUTED, rect.width - 24)

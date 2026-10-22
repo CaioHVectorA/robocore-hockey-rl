@@ -1,5 +1,7 @@
 # Prompt para o Antigravity
 
+**Atualização de 22/10/2026:** a sessão abaixo terminou estagnada (7 vitórias em 5.104 episódios de coleta, nenhuma após o episódio 344). As instruções de retomada competitiva deste documento são históricas; não repetir outra noite automaticamente. Para o próximo experimento, seguir [FOUNDATION_TRAINING.md](FOUNDATION_TRAINING.md), com `solo_foundation`, participação, validação de etapa e parada por estagnação. Os pesos antigos devem permanecer preservados para comparação.
+
 Continue o treinamento 1v1 de hockey neste projeto Windows:
 `C:\Users\caihe\Documents\develop\robocore-hockey-rl`.
 Use PowerShell e o Python da `.venv`. Execute o treino e acompanhe os resultados com atualizações reais no chat. O objetivo é um robô autônomo localizar o disco, disputar e marcar gol; depois quero jogar contra a política na simulação e usar isso como POC para transferência ao robô físico.

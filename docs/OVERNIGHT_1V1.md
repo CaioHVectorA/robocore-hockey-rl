@@ -31,7 +31,9 @@ São parâmetros de partida, sem garantia de vitória contra uma pessoa. A físi
 
 A suíte reservada usa ações determinísticas contra o bot tático fixo e contra a política inicial congelada. Cada adversário enfrenta os mesmos seis seeds reservados, alternando face-off e posições variadas, com episódios de até sessenta segundos. As trajetórias de avaliação não entram no PPO.
 
-`success_rate` é a fração de episódios vencidos; também são registrados derrotas e limites de tempo. `point_score` conta vitória como 1 e limite de tempo como 0,5. `latest.best.pt` é escolhido pelo melhor `point_score` agregado, somente em avaliações completas. Uma avaliação interrompida não promove pesos. O resultado de doze duelos curtos é uma medida periódica, não uma estatística de desempenho contra humanos ou em partidas completas de cinco minutos.
+`success_rate` é a fração de episódios vencidos; também são registrados derrotas e limites de tempo. `point_score` conta vitória como 1 e limite de tempo como 0,5. No treino original de 21/10, o melhor checkpoint foi escolhido por esse índice. Após a análise de 22/10, novos treinos selecionam `latest.best.pt` por **`active_success_rate`**, exigindo participação do azul (ou chegada no objetivo `reach`) e avaliação completa. Um gol contra do adversário sem toque azul continua valendo no placar, mas não promove o modelo como habilidade aprendida. Checkpoints antigos continuam carregáveis; o limiar do seletor anterior é reiniciado na nova sessão porque as métricas diferem. O resultado de doze duelos curtos é uma medida periódica, não uma estatística de desempenho contra humanos ou em partidas completas de cinco minutos.
+
+O preset `duel_selfplay` passa a usar `stagnation_patience=200`: encerra cooperativamente após duzentos episódios consecutivos sem sucesso ativo. Configurações JSON antigas mantêm o padrão desativado; use `--stagnation-patience 200` explicitamente ao retomá-las. Para recuperar fundamentos antes de nova disputa, veja [o protocolo solo](FOUNDATION_TRAINING.md).
 
 `latest.pt` é salvo após cada atualização e ao encerrar. Os pesos da POC permanecem fora dessa pasta. Para uma avaliação maior após o treino:
 

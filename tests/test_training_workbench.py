@@ -104,7 +104,11 @@ def test_pure_selfplay_never_uses_a_tactical_fallback_in_collection(tmp_path, mo
         raise AssertionError("A heuristic was used in pure self-play")
 
     monkeypatch.setattr(HeuristicHockeyBot, "get_actions", forbidden)
-    monkeypatch.setattr(rl.training, "evaluate_config", lambda *a, **k: dict(episodes=0, success_rate=0))
+    monkeypatch.setattr(
+        rl.training,
+        "evaluate_config",
+        lambda *a, **k: dict(episodes=0, success_rate=0, active_success_rate=0),
+    )
     cfg = replace(TrainingConfig(), steps=16, envs=2, rollout=4, epochs=1, eval_episodes=1)
     trainer = TrainingSession(cfg, tmp_path / "session").run()
     assert trainer.environment_steps == 16 and trainer.total_steps == 48

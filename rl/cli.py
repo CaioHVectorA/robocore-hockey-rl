@@ -91,6 +91,7 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
     base.add_argument("--random-heading", action=argparse.BooleanOptionalAction, default=None)
     base.add_argument("--domain-randomization", action=argparse.BooleanOptionalAction, default=None)
     base.add_argument("--evaluation-suite", action=argparse.BooleanOptionalAction, default=None)
+    base.add_argument("--curriculum-eval-gate", action=argparse.BooleanOptionalAction, default=None)
     duration = base.add_mutually_exclusive_group()
     duration.add_argument("--episode-seconds", type=float)
     duration.add_argument("--episode-steps", type=int, help="Duração alternativa em passos de 30 Hz")
@@ -109,6 +110,7 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
         "curriculum_min_episodes",
         "curriculum_window",
         "selfplay_pool_size",
+        "stagnation_patience",
     ):
         ppo.add_argument("--" + key.replace("_", "-"), type=int)
     for key in (
@@ -128,7 +130,7 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
         action="append",
         default=[],
         metavar="NOME=VALOR",
-        help="Repetível: goal, progress, approach, time_penalty, energy_penalty, reach_bonus, reach_distance",
+        help="Repetível: " + ", ".join(field.name for field in fields(RewardConfig)),
     )
     ppo.add_argument("--speed", type=float, help="Ritmo: 0=máximo, 1=tempo real, 5=5x")
     weights = ppo.add_mutually_exclusive_group()

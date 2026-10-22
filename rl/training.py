@@ -14,7 +14,8 @@ import torch
 from core.constants import RobotConfig
 from core.file_io import atomic_destination, sharing_violation
 from rl.ppo_trainer import HockeyPPOTrainer
-from rl.curriculum import SoloCurriculum, SOLO_STAGES
+from rl.curriculum import SoloCurriculum, SOLO_STAGES, ProgressGuard
+from rl.tasks import RewardConfig
 
 
 def atomic_json(path, data, best_effort=False):
@@ -111,6 +112,7 @@ def evaluate_config(
                         steps=step + 1,
                         reward=total,
                         scenario=scenario,
+                        **participation_record(info),
                     )
                 )
                 break
@@ -132,6 +134,8 @@ def evaluate_config(
         opponent=opponent_name
         or ("none" if config.opponent_robots == 0 else "zero" if config.opponent == "zero" else "heuristic"),
         records=records,
+        complete=len(records) == (episodes or config.eval_episodes),
+        **participation_summary(records),
     )
 
 
@@ -166,6 +170,32 @@ def evaluate_opponent_suite(trainer, config, anchor, should_stop=lambda: False):
         opponent="fixed_suite",
         scenario="faceoff+random",
         by_opponent=results,
+        **participation_summary([r for row in results.values() for r in row["records"]]),
+    )
+
+
+def participation_record(info):
+    return dict(
+        active_success=info["active_success"],
+        blue_participated=info["blue_participated"],
+        goal_last_touch_team=info["goal_last_touch_team"],
+        touches_blue=info["touches_blue"],
+        idle_fraction=info["idle_fraction"],
+        tracking_lost_fraction=info["tracking_lost_fraction"],
+        mean_distance_to_puck=info["mean_distance_to_puck"],
+    )
+
+
+def participation_summary(records):
+    n = max(1, len(records))
+    return dict(
+        active_success_rate=sum(r.get("active_success", False) for r in records) / n,
+        touch_episode_rate=sum(r.get("blue_participated", False) for r in records) / n,
+        mean_idle_fraction=sum(r.get("idle_fraction", 0) for r in records) / n,
+        mean_distance_to_puck=sum(r.get("mean_distance_to_puck", 0) for r in records) / n,
+        wins_without_blue_touch=sum(
+            r.get("success", False) and not r.get("blue_participated", False) for r in records
+        ),
     )
 
 
@@ -196,6 +226,7 @@ class TrainingSession:
         self.stop_reason = None
         self.selfplay_pool = None
         self.selfplay_anchor = None
+        self.progress_guard = ProgressGuard(config.stagnation_patience)
 
     def control(self):
         now = time.perf_counter()
@@ -228,6 +259,7 @@ class TrainingSession:
             curriculum=self.curriculum.state() if self.curriculum else None,
             deadline=self.deadline,
             stop_reason=self.stop_reason,
+            progress_guard=self.progress_guard.state(),
             **extra,
         )
         atomic_json(self.directory / "status.json", data)
@@ -279,6 +311,8 @@ class TrainingSession:
             opponent=self.config.opponent,
             curriculum=self.curriculum.state() if self.curriculum else None,
             best_evaluation_score=self.best if math.isfinite(self.best) else None,
+            evaluation_metric="active_success_rate-v1",
+            progress_guard=self.progress_guard.state(),
             selfplay_state=dict(
                 anchor=self.selfplay_anchor.state_dict(),
                 pool=[net.state_dict() for net in self.selfplay_pool],
@@ -303,8 +337,15 @@ class TrainingSession:
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
                     )
             if self.curriculum:
-                for key in ("curriculum_success_threshold", "curriculum_min_episodes", "curriculum_window"):
-                    if previous_config.get(key) != getattr(cfg, key):
+                for key in (
+                    "curriculum_success_threshold",
+                    "curriculum_min_episodes",
+                    "curriculum_window",
+                    "curriculum_eval_gate",
+                ):
+                    if previous_config.get(key, False if key == "curriculum_eval_gate" else None) != getattr(
+                        cfg, key
+                    ):
                         raise ValueError("Critérios do currículo diferentes dos pesos; use transferência")
             for key in (
                 "robots_per_team",
@@ -315,7 +356,10 @@ class TrainingSession:
                 "spawn_distance",
                 "random_heading",
             ):
-                if old.get(key) != env.configuration().get(key):
+                old_value = (
+                    asdict(RewardConfig(**old[key])) if key == "reward" and key in old else old.get(key)
+                )
+                if old_value != env.configuration().get(key):
                     raise ValueError(
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
                     )
@@ -387,8 +431,13 @@ class TrainingSession:
         self.selfplay_anchor.requires_grad_(False)
         if cfg.init_mode == "resume":
             previous_best = loaded_meta.get("best_evaluation_score")
-            if isinstance(previous_best, (int, float)) and math.isfinite(previous_best):
+            if (
+                loaded_meta.get("evaluation_metric") == "active_success_rate-v1"
+                and isinstance(previous_best, (int, float))
+                and math.isfinite(previous_best)
+            ):
                 self.best = previous_best
+            self.progress_guard.restore(loaded_meta.get("progress_guard") or {})
             saved_league = loaded_meta.get("selfplay_state")
             if saved_league:
                 self.selfplay_anchor.load_state_dict(saved_league["anchor"])
@@ -479,9 +528,11 @@ class TrainingSession:
                             stage=env.scenario,
                             initialization=env.initialization,
                             reward_components=info["episode_reward_components"],
+                            **participation_record(info),
                         )
                         self.episodes += 1
                         self.episode_records.append(record)
+                        self.progress_guard.record(record)
                         episodes_log.write(json.dumps(record) + "\n")
                         episodes_log.flush()
                 trainer.store_transition(
@@ -498,6 +549,8 @@ class TrainingSession:
                 if self.curriculum:
                     self.curriculum.update(self.episode_records)
                     stage = self.curriculum.stage
+                if self.progress_guard.exhausted(stage):
+                    self.stop_requested, self.stop_reason = True, "stagnation"
                 self.finished += cfg.envs
                 self.progress()
                 self.publish(
@@ -546,6 +599,29 @@ class TrainingSession:
         trainer.update(epochs=cfg.epochs, batch_size=cfg.batch_size)
         if trainer.updates_count % cfg.snapshot_every == 0:
             snapshot()
+        validation_record = None
+        if (
+            evaluate
+            and not self.control()
+            and self.curriculum
+            and self.curriculum.eval_gate
+            and self.curriculum.ready
+            and (
+                self.curriculum.validation is None
+                or trainer.updates_count - self.curriculum.validation.get("updates", 0) >= cfg.eval_every
+            )
+        ):
+            # Validate when mastery is observed, rather than overtraining an easy
+            # stage until the next full-search evaluation interval.
+            self.status("evaluating", updates=trainer.updates_count)
+            current_stage = self.curriculum.stage
+            validation = evaluate_config(
+                trainer, cfg, seed=30000, should_stop=self.control, scenarios=(current_stage,)
+            )
+            promoted = self.curriculum.validate(
+                current_stage, dict(validation, updates=trainer.updates_count)
+            )
+            validation_record = dict(stage=current_stage, promoted=promoted, **validation)
         metadata = self.metadata(env, trainer)
         self.status("saving", updates=trainer.updates_count)
         trainer.save(self.save_path, metadata)
@@ -569,7 +645,11 @@ class TrainingSession:
             if recent
             else {},
             **trainer.metrics,
+            participation=participation_summary(recent),
+            progress_guard=self.progress_guard.state(),
         )
+        if validation_record is not None:
+            record["curriculum_validation"] = validation_record
         if (
             evaluate
             and not self.control()
@@ -583,16 +663,12 @@ class TrainingSession:
             )
             self.last_evaluation = score
             record["evaluation"] = score
-            quality = (
-                score.get("point_score", score["success_rate"])
-                if cfg.evaluation_suite
-                else score["success_rate"]
-            )
-            if score["episodes"] and score.get("complete", True) and quality > self.best:
+            quality = score["active_success_rate"]
+            if score["episodes"] and score.get("complete", True) and quality > max(0.0, self.best):
                 self.best = quality
                 trainer.save(
                     self.save_path.with_suffix(".best.pt"),
-                    dict(metadata, evaluation=score, best_evaluation_score=self.best),
+                    dict(self.metadata(env, trainer), evaluation=score, best_evaluation_score=self.best),
                 )
             # Persist the selection score immediately, so a restart just after
             # evaluation cannot forget which quality threshold has been reached.

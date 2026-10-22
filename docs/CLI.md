@@ -114,3 +114,11 @@ python train.py --preset solo_goal --steps 100000 --no-live
 ```
 
 Esse conjunto usa `opencv-python-headless` e dispensa Pygame e Bluetooth. A instalação desktop existente também roda a CLI. As variantes `opencv-python` e `opencv-python-headless` compartilham o módulo `cv2`; mantenha as duas instalações em ambientes separados.
+
+## Fundamentos e estagnação
+
+`--preset solo_foundation` seleciona a [recuperação de habilidades](FOUNDATION_TRAINING.md). Os novos pesos `alignment`, `first_touch`, `carry` e `idle_penalty` também aceitam `--reward NOME=VALOR`. Seu padrão é zero nos experimentos antigos.
+
+`--curriculum-eval-gate` exige prova determinística da etapa solo antes de promover; `--stagnation-patience 200` encerra com salvamento após duzentos episódios consecutivos sem sucesso ativo na etapa. `0` desativa a proteção. O motivo aparece em `status.json` como `stop_reason=stagnation`. Gols sem toque azul não zeram esse contador no objetivo `score`.
+
+As avaliações e os eventos de métricas incluem participação, toques, inatividade e distância ao disco. O melhor modelo novo exige avaliação completa e sucesso ativo acima de zero; empates por tempo e vitórias sem participação, sozinhos, não criam `latest.best.pt`. O placar esportivo continua registrado.
