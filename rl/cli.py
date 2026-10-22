@@ -92,6 +92,12 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
     base.add_argument("--domain-randomization", action=argparse.BooleanOptionalAction, default=None)
     base.add_argument("--evaluation-suite", action=argparse.BooleanOptionalAction, default=None)
     base.add_argument("--curriculum-eval-gate", action=argparse.BooleanOptionalAction, default=None)
+    base.add_argument("--heading-spread", type=float, help="Desvio angular inicial máximo no solo (radianos)")
+    base.add_argument(
+        "--reach-speed-limit", type=float, help="Velocidade relativa máxima para chegada (cm/s); 0 desativa"
+    )
+    base.add_argument("--reset-critic", action=argparse.BooleanOptionalAction, default=None)
+    base.add_argument("--reset-exploration", action=argparse.BooleanOptionalAction, default=None)
     duration = base.add_mutually_exclusive_group()
     duration.add_argument("--episode-seconds", type=float)
     duration.add_argument("--episode-steps", type=int, help="Duração alternativa em passos de 30 Hz")

@@ -57,6 +57,12 @@ REWARD_ROWS = (
     ("first_touch", "Primeiro contato", "Bônus único por episódio; não repete por ficar encostado.", "all"),
     ("carry", "Condução com participação", "Novo progresso máximo após toque recente do azul.", "score"),
     (
+        "overspeed_penalty",
+        "Aproximação rápida demais",
+        "Custo de velocidade relativa excedente a até 30 cm do disco.",
+        "all",
+    ),
+    (
         "idle_penalty",
         "Inatividade longe do disco",
         "Custo por passo após 3 s abaixo de 2 cm/s, a mais de 20 cm.",
@@ -715,6 +721,17 @@ class TrainingPanel:
             ),
         )
         self.field("Força do bot adversário (0 a 1)", "opponent_difficulty")
+        self.field("Desvio angular inicial no solo (rad)", "heading_spread")
+        self.field("Limite relativo de chegada (cm/s; 0 desativa)", "reach_speed_limit")
+        self.choice(
+            "Reiniciar crítico na transferência", "reset_critic", [True, False], {True: "Sim", False: "Não"}
+        )
+        self.choice(
+            "Reiniciar exploração na transferência",
+            "reset_exploration",
+            [True, False],
+            {True: "Sim", False: "Não"},
+        )
         if self.config.opponent_robots:
             self.section("Adversários e avaliação")
             self.pair(

@@ -122,6 +122,15 @@ class HockeyPPOTrainer:
     def clear_buffer(self):
         self.buffer.clear()
 
+    def reset_transfer_heads(self, *, critic=False, exploration=False):
+        """Keep actor knowledge; reset value estimates/noise for a new task."""
+        if critic:
+            fresh = HockeyPolicyNet(self.obs_dim, self.act_dim).to(self.device)
+            self.net.critic.load_state_dict(fresh.critic.state_dict())
+        if exploration:
+            with torch.no_grad():
+                self.net.log_std.fill_(-0.8)
+
     @property
     def buffer_steps(self):
         return len(self.buffer)

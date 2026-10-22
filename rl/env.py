@@ -46,6 +46,8 @@ class RoboCoreHockeyEnv(gym.Env):
         reward_config=None,
         spawn_distance=60.0,
         random_heading=True,
+        heading_spread=math.pi,
+        reach_speed_limit=0.0,
     ):
         super().__init__()
         from bots.hockey_bot import HeuristicHockeyBot
@@ -64,6 +66,12 @@ class RoboCoreHockeyEnv(gym.Env):
         self.reward_config = reward_config or RewardConfig()
         self.spawn_distance = spawn_distance
         self.random_heading = random_heading
+        if not math.isfinite(heading_spread) or not 0 <= heading_spread <= math.pi:
+            raise ValueError("Invalid heading spread")
+        if not math.isfinite(reach_speed_limit) or not 0 <= reach_speed_limit <= 120:
+            raise ValueError("Invalid reach speed limit")
+        self.heading_spread = heading_spread
+        self.reach_speed_limit = reach_speed_limit
         self.engine = HockeyPhysicsEngine(
             robots_per_team,
             domain_randomization,
@@ -230,6 +238,8 @@ class RoboCoreHockeyEnv(gym.Env):
             bearing = e.rng.uniform(-math.pi, math.pi) if broad else e.rng.uniform(-1.0, 1.0)
             distance = e.rng.uniform(self.spawn_distance * 0.5, self.spawn_distance)
             heading = e.rng.uniform(-math.pi, math.pi) if self.random_heading else bearing
+            if self.random_heading and self.heading_spread < math.pi:
+                heading = bearing + e.rng.uniform(-self.heading_spread, self.heading_spread)
             e.place_robot(r, px - math.cos(bearing) * distance, py - math.sin(bearing) * distance, heading)
             e.place_puck(px, py)
         elif scenario == "shooting":
@@ -277,6 +287,7 @@ class RoboCoreHockeyEnv(gym.Env):
                 "first_touch",
                 "carry",
                 "idle_penalty",
+                "overspeed_penalty",
             ),
             0.0,
         )
@@ -311,7 +322,16 @@ class RoboCoreHockeyEnv(gym.Env):
         distance = min(
             math.hypot(r.x - self.engine.puck.x, r.y - self.engine.puck.y) for r in self.engine.blue_robots
         )
-        reached = self.objective == "reach" and distance <= rc.reach_distance and info["goal_scored"] >= 0
+        relative_speed = min(
+            math.hypot(r.vx - self.engine.puck.vx, r.vy - self.engine.puck.vy)
+            for r in self.engine.blue_robots
+        )
+        reached = (
+            self.objective == "reach"
+            and distance <= rc.reach_distance
+            and info["goal_scored"] >= 0
+            and (self.reach_speed_limit == 0 or relative_speed <= self.reach_speed_limit)
+        )
         terminated = info["goal_scored"] != 0 or reached
         shaping = (rc.progress if self.objective == "score" else 0.0) * (
             self.shaping_gamma * (0.0 if terminated else phi) - self.prev_potential
@@ -355,6 +375,11 @@ class RoboCoreHockeyEnv(gym.Env):
             first_touch=rc.first_touch * first_touch,
             carry=rc.carry * new_progress * controlled if self.objective == "score" else 0.0,
             idle_penalty=-rc.idle_penalty if self.idle_duration >= 3 else 0.0,
+            overspeed_penalty=(
+                -rc.overspeed_penalty * min(4.0, max(0.0, relative_speed / self.reach_speed_limit - 1)) ** 2
+                if self.reach_speed_limit > 0 and distance <= 30
+                else 0.0
+            ),
         )
         reward = sum(value for key, value in components.items() if key != "energy_penalty")
         indiv = reward - energy
@@ -388,8 +413,12 @@ class RoboCoreHockeyEnv(gym.Env):
         info["tracking_lost_fraction"] = self.metrics["tracking_lost_steps"] / self.engine.steps
         info["blue_participated"] = self.metrics["touches_blue"] > 0
         info["goal_last_touch_team"] = self.engine.puck.last_touch_team
-        info["active_success"] = bool(reached or (info["goal_scored"] == 1 and info["blue_participated"]))
-        info["is_success"] = bool(reached or info["goal_scored"] == 1)
+        info["relative_puck_speed"] = relative_speed
+        info["reached_target"] = bool(reached)
+        info["active_success"] = bool(
+            reached or (self.objective == "score" and info["goal_scored"] == 1 and info["blue_participated"])
+        )
+        info["is_success"] = bool(reached if self.objective == "reach" else info["goal_scored"] == 1)
         info["result"] = (
             "success"
             if info["is_success"]
@@ -412,6 +441,8 @@ class RoboCoreHockeyEnv(gym.Env):
             reward=asdict(self.reward_config),
             spawn_distance=self.spawn_distance,
             random_heading=self.random_heading,
+            heading_spread=self.heading_spread,
+            reach_speed_limit=self.reach_speed_limit,
             scenario=self.scenario,
             max_steps=self.max_steps,
         )

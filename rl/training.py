@@ -179,10 +179,13 @@ def participation_record(info):
         active_success=info["active_success"],
         blue_participated=info["blue_participated"],
         goal_last_touch_team=info["goal_last_touch_team"],
+        goal_scored=info["goal_scored"],
         touches_blue=info["touches_blue"],
         idle_fraction=info["idle_fraction"],
         tracking_lost_fraction=info["tracking_lost_fraction"],
         mean_distance_to_puck=info["mean_distance_to_puck"],
+        terminal_relative_speed=info["relative_puck_speed"],
+        reached_target=info["reached_target"],
     )
 
 
@@ -194,7 +197,8 @@ def participation_summary(records):
         mean_idle_fraction=sum(r.get("idle_fraction", 0) for r in records) / n,
         mean_distance_to_puck=sum(r.get("mean_distance_to_puck", 0) for r in records) / n,
         wins_without_blue_touch=sum(
-            r.get("success", False) and not r.get("blue_participated", False) for r in records
+            r.get("goal", r.get("goal_scored", 0)) == 1 and not r.get("blue_participated", False)
+            for r in records
         ),
     )
 
@@ -355,10 +359,14 @@ class TrainingSession:
                 "simulation",
                 "spawn_distance",
                 "random_heading",
+                "heading_spread",
+                "reach_speed_limit",
             ):
                 old_value = (
                     asdict(RewardConfig(**old[key])) if key == "reward" and key in old else old.get(key)
                 )
+                if key not in old and key in ("heading_spread", "reach_speed_limit"):
+                    old_value = math.pi if key == "heading_spread" else 0.0
                 if old_value != env.configuration().get(key):
                     raise ValueError(
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
@@ -376,6 +384,7 @@ class TrainingSession:
                     "Hiperparâmetros diferentes dos pesos; use transferência ou restaure a configuração"
                 )
         else:
+            trainer.reset_transfer_heads(critic=cfg.reset_critic, exploration=cfg.reset_exploration)
             trainer.total_steps = trainer.environment_steps = trainer.updates_count = 0
         return meta
 

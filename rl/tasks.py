@@ -17,6 +17,7 @@ class RewardConfig:
     first_touch: float = 0.0
     carry: float = 0.0
     idle_penalty: float = 0.0
+    overspeed_penalty: float = 0.0
 
     def __post_init__(self):
         if not all(math.isfinite(v) and v >= 0 for v in vars(self).values()):

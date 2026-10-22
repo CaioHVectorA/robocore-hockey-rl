@@ -52,6 +52,10 @@ class TrainingConfig:
     evaluation_suite: bool = False
     curriculum_eval_gate: bool = False
     stagnation_patience: int = 0  # Consecutive episodes without active success; 0 disables.
+    heading_spread: float = math.pi
+    reach_speed_limit: float = 0.0
+    reset_critic: bool = False
+    reset_exploration: bool = False
 
     def __post_init__(self):
         if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 120:
@@ -63,6 +67,8 @@ class TrainingConfig:
                 self.random_heading,
                 self.evaluation_suite,
                 self.curriculum_eval_gate,
+                self.reset_critic,
+                self.reset_exploration,
             )
         ):
             raise ValueError("Variações físicas e orientação aleatória devem ser booleanas")
@@ -124,6 +130,8 @@ class TrainingConfig:
             speed=(0, 1000),
             curriculum_success_threshold=(0.01, 1),
             selfplay_anchor_probability=(0, 1),
+            heading_spread=(0, math.pi),
+            reach_speed_limit=(0, 120),
         )
         for key, (lo, hi) in ranges.items():
             value = getattr(self, key)
@@ -192,6 +200,8 @@ class TrainingConfig:
             spawn_distance=self.spawn_distance,
             random_heading=self.random_heading,
             opponent_difficulty=self.opponent_difficulty,
+            heading_spread=self.heading_spread,
+            reach_speed_limit=self.reach_speed_limit,
         )
 
 
