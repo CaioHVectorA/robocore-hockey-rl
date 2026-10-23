@@ -1,5 +1,7 @@
 # PPO modular: aprovar habilidades antes de avançar
 
+Para recuperar a transição de condução para busca livre, consulte [PPO_RECOVERY.md](PPO_RECOVERY.md) e o plano alternativo `configs/training/modular_recovery.json`.
+
 O coordenador `train_modular.py` executa os módulos de `configs/training/modular.json` em sequência, transferindo a política aprovada e mantendo a mesma observação de 63 valores e duas ações de roda. Não existe promoção por tempo gasto, quantidade de passos ou recompensa de coleta.
 
 ## Sequência e aprovação

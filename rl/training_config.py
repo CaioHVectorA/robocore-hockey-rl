@@ -56,6 +56,10 @@ class TrainingConfig:
     reach_speed_limit: float = 0.0
     reset_critic: bool = False
     reset_exploration: bool = False
+    value_clip: float = 0.0  # 0 preserves the legacy unconstrained critic loss.
+    setup_spread: float = math.pi
+    rehearsal_scenarios: tuple[str, ...] = ()
+    rehearsal_probability: float = 0.0
 
     def __post_init__(self):
         if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 120:
@@ -76,6 +80,19 @@ class TrainingConfig:
             raise ValueError("Arena ou objetivo inválido")
         if self.scenario not in (*SCENARIOS, *CURRICULA):
             raise ValueError("Cenário inválido")
+        if not isinstance(self.rehearsal_scenarios, tuple) or any(
+            name not in ("solo_finish", "solo_carry") for name in self.rehearsal_scenarios
+        ):
+            raise ValueError("Revisão aceita cenários solo_finish e solo_carry")
+        if self.rehearsal_scenarios and (
+            self.robots_per_team != 1
+            or self.opponent_robots != 0
+            or self.objective != "score"
+            or self.scenario in CURRICULA
+        ):
+            raise ValueError("Revisão exige tarefa solo de gol com cenário fixo")
+        if self.rehearsal_probability and not self.rehearsal_scenarios:
+            raise ValueError("Informe os cenários para revisar")
         if self.scenario == "duel" and (self.robots_per_team != 1 or self.opponent_robots != 1):
             raise ValueError("Cenário 1v1 exige exatamente um robô de cada time")
         if self.evaluation_suite and self.opponent_robots == 0:
@@ -132,6 +149,9 @@ class TrainingConfig:
             selfplay_anchor_probability=(0, 1),
             heading_spread=(0, math.pi),
             reach_speed_limit=(0, 120),
+            value_clip=(0, 100),
+            setup_spread=(0, math.pi),
+            rehearsal_probability=(0, 0.5),
         )
         for key, (lo, hi) in ranges.items():
             value = getattr(self, key)
@@ -166,6 +186,8 @@ class TrainingConfig:
         data = dict(data)
         if "reward" in data:
             data["reward"] = RewardConfig(**data["reward"])
+        if "rehearsal_scenarios" in data:
+            data["rehearsal_scenarios"] = tuple(data["rehearsal_scenarios"])
         return cls(**data)
 
     @classmethod
@@ -202,7 +224,14 @@ class TrainingConfig:
             opponent_difficulty=self.opponent_difficulty,
             heading_spread=self.heading_spread,
             reach_speed_limit=self.reach_speed_limit,
+            setup_spread=self.setup_spread,
         )
+
+    def training_scenario(self, stage, rng):
+        """Rehearsal collects fresh on-policy episodes; evaluations stay fixed."""
+        if self.rehearsal_scenarios and rng.random() < self.rehearsal_probability:
+            return str(rng.choice(self.rehearsal_scenarios))
+        return stage
 
 
 PRESET_LABELS = {

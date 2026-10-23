@@ -495,6 +495,7 @@ class TrainingPanel:
                 "solo_finish",
                 "solo_carry",
                 "solo_search",
+                "solo_setup",
                 "duel",
                 "shooting",
                 "defending",
@@ -513,6 +514,7 @@ class TrainingPanel:
                 solo_finish="Solo · finalizar perto do gol",
                 solo_carry="Solo · conduzir até o gol",
                 solo_search="Solo · buscar em todas as direções",
+                solo_setup="Solo · posicionamento progressivo para gol",
                 duel="1v1 · saídas e situações variadas",
             ),
             preview=True,
@@ -643,6 +645,7 @@ class TrainingPanel:
         self.pair(
             ("Clipping · limite PPO", "clip_eps", float), ("KL alvo · limite de mudança", "target_kl", float)
         )
+        self.field("Clipping do crítico (0 desativa)", "value_clip")
         self.section("Coleta e otimização")
         self.pair(
             ("Passos por ambiente / atualização", "rollout", int),
@@ -722,6 +725,12 @@ class TrainingPanel:
         )
         self.field("Força do bot adversário (0 a 1)", "opponent_difficulty")
         self.field("Desvio angular inicial no solo (rad)", "heading_spread")
+        self.field("Arco de posicionamento no solo_setup (rad)", "setup_spread")
+        self.field("Probabilidade de revisar habilidades (0 a 0,5)", "rehearsal_probability")
+        self.paragraph(
+            "Cenários de revisão: "
+            + (", ".join(self.config.rehearsal_scenarios) or "nenhum; configure no JSON ou CLI")
+        )
         self.field("Limite relativo de chegada (cm/s; 0 desativa)", "reach_speed_limit")
         self.choice(
             "Reiniciar crítico na transferência", "reset_critic", [True, False], {True: "Sim", False: "Não"}

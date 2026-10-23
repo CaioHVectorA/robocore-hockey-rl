@@ -335,8 +335,20 @@ class TrainingSession:
             raise ValueError("Checkpoint and current arena/HockeyBot model differ")
         if cfg.init_mode == "resume":
             previous_config = meta.get("training_config", {})
-            for key in ("scenario", "opponent", "domain_randomization"):
-                if previous_config.get(key) != getattr(cfg, key):
+            for key in (
+                "scenario",
+                "opponent",
+                "domain_randomization",
+                "rehearsal_scenarios",
+                "rehearsal_probability",
+            ):
+                previous = previous_config.get(
+                    key,
+                    () if key == "rehearsal_scenarios" else 0.0 if key == "rehearsal_probability" else None,
+                )
+                if key == "rehearsal_scenarios":
+                    previous = tuple(previous)
+                if previous != getattr(cfg, key):
                     raise ValueError(
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
                     )
@@ -361,12 +373,13 @@ class TrainingSession:
                 "random_heading",
                 "heading_spread",
                 "reach_speed_limit",
+                "setup_spread",
             ):
                 old_value = (
                     asdict(RewardConfig(**old[key])) if key == "reward" and key in old else old.get(key)
                 )
-                if key not in old and key in ("heading_spread", "reach_speed_limit"):
-                    old_value = math.pi if key == "heading_spread" else 0.0
+                if key not in old and key in ("heading_spread", "reach_speed_limit", "setup_spread"):
+                    old_value = 0.0 if key == "reach_speed_limit" else math.pi
                 if old_value != env.configuration().get(key):
                     raise ValueError(
                         f"Retomada incompatível em {key}; use transferência para mudar o exercício"
@@ -378,6 +391,7 @@ class TrainingSession:
                 clip_eps=cfg.clip_eps,
                 target_kl=cfg.target_kl,
                 entropy_coef=cfg.entropy_coef,
+                value_clip=cfg.value_clip,
             )
             if any(getattr(trainer, key) != value for key, value in expected.items()):
                 raise ValueError(
@@ -422,10 +436,14 @@ class TrainingSession:
             clip_eps=cfg.clip_eps,
             target_kl=cfg.target_kl,
             entropy_coef=cfg.entropy_coef,
+            value_clip=cfg.value_clip,
             seed=cfg.seed,
         )
         stage = curriculum_stage(cfg, 0)
         envs = [cfg.make_env(stage) for _ in range(cfg.envs)]
+        rehearsal_rng = np.random.default_rng(cfg.seed + 54321)
+        for env in envs:
+            env.scenario = cfg.training_scenario(stage, rehearsal_rng)
         observations = [env.reset(seed=cfg.seed + i)[0] for i, env in enumerate(envs)]
         loaded_meta = self._load(trainer, envs[0])
         if self.curriculum and cfg.init_mode == "resume":
@@ -578,7 +596,7 @@ class TrainingSession:
                     if ended[i]:
                         if i == 0:
                             self.episode_number += 1
-                        env.scenario = stage
+                        env.scenario = cfg.training_scenario(stage, rehearsal_rng)
                         observations[i] = env.reset()[0]
                         returns[i] = 0
                         choose(i)

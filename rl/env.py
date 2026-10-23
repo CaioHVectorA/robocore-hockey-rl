@@ -21,6 +21,7 @@ SCENARIOS = (
     "solo_finish",
     "solo_carry",
     "solo_search",
+    "solo_setup",
     "duel",
 )
 
@@ -48,6 +49,7 @@ class RoboCoreHockeyEnv(gym.Env):
         random_heading=True,
         heading_spread=math.pi,
         reach_speed_limit=0.0,
+        setup_spread=math.pi,
     ):
         super().__init__()
         from bots.hockey_bot import HeuristicHockeyBot
@@ -72,6 +74,9 @@ class RoboCoreHockeyEnv(gym.Env):
             raise ValueError("Invalid reach speed limit")
         self.heading_spread = heading_spread
         self.reach_speed_limit = reach_speed_limit
+        if not math.isfinite(setup_spread) or not 0 <= setup_spread <= math.pi:
+            raise ValueError("Invalid puck setup spread")
+        self.setup_spread = setup_spread
         self.engine = HockeyPhysicsEngine(
             robots_per_team,
             domain_randomization,
@@ -230,6 +235,26 @@ class RoboCoreHockeyEnv(gym.Env):
                 py - math.sin(bearing) * distance,
                 bearing + (e.rng.uniform(-heading_noise, heading_noise) if self.random_heading else 0),
             )
+            e.place_puck(px, py)
+        elif scenario == "solo_setup":
+            # Expand from the successful carry geometry to the full search
+            # distribution. Zero spread starts behind the puck, toward the goal;
+            # pi covers every side. No controller steers the robot after reset.
+            for _ in range(64):
+                px = e.rng.uniform(-a.length * 0.25, a.length * 0.3)
+                py = e.rng.uniform(-a.width * 0.35, a.width * 0.35)
+                goal_bearing = math.atan2(-py, a.half_length - px)
+                bearing = goal_bearing + e.rng.uniform(-self.setup_spread, self.setup_spread)
+                distance = e.rng.uniform(self.spawn_distance * 0.5, self.spawn_distance)
+                heading = bearing + (
+                    e.rng.uniform(-self.heading_spread, self.heading_spread) if self.random_heading else 0
+                )
+                x, y = px - math.cos(bearing) * distance, py - math.sin(bearing) * distance
+                e.place_robot(r, x, y, heading)
+                if math.hypot(r.x - x, r.y - y) < 1e-5:
+                    break
+            else:
+                raise ValueError("Could not sample a legal solo_setup placement")
             e.place_puck(px, py)
         elif scenario in ("solo", "solo_search"):
             broad = scenario == "solo_search"
@@ -443,6 +468,7 @@ class RoboCoreHockeyEnv(gym.Env):
             random_heading=self.random_heading,
             heading_spread=self.heading_spread,
             reach_speed_limit=self.reach_speed_limit,
+            setup_spread=self.setup_spread,
             scenario=self.scenario,
             max_steps=self.max_steps,
         )

@@ -1,0 +1,7 @@
+{
+  "source": "runs\\modular\\20261022-155111\\07-carry\\approved.pt",
+  "sha256": "e688bdb15d622946456c32218f201cf8c34c1d8b1982878fa7a2c9ebebbb7725",
+  "validation": 0.92,
+  "confirmation": 0.96,
+  "description": "Approved carry checkpoint, preserved before recovery. Not a full search or 1v1 policy."
+}

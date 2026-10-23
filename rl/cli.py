@@ -98,6 +98,16 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
     )
     base.add_argument("--reset-critic", action=argparse.BooleanOptionalAction, default=None)
     base.add_argument("--reset-exploration", action=argparse.BooleanOptionalAction, default=None)
+    base.add_argument("--setup-spread", type=float, help="Arco inicial em torno do disco no solo_setup (rad)")
+    base.add_argument(
+        "--rehearsal-scenario",
+        dest="rehearsal_scenarios",
+        action="append",
+        choices=["solo_finish", "solo_carry"],
+    )
+    base.add_argument(
+        "--rehearsal-probability", type=float, help="Fração de episódios novos para revisar habilidades"
+    )
     duration = base.add_mutually_exclusive_group()
     duration.add_argument("--episode-seconds", type=float)
     duration.add_argument("--episode-steps", type=int, help="Duração alternativa em passos de 30 Hz")
@@ -128,6 +138,7 @@ Ctrl+C solicita encerramento com salvamento. Nenhuma janela e aberta.
         "entropy_coef",
         "curriculum_success_threshold",
         "selfplay_anchor_probability",
+        "value_clip",
     ):
         ppo.add_argument("--" + key.replace("_", "-"), type=float)
     ppo.add_argument(
@@ -204,6 +215,8 @@ def resolve_config(args):
     }
     if args.episode_steps is not None:
         updates["episode_seconds"] = args.episode_steps / 30
+    if "rehearsal_scenarios" in updates:
+        updates["rehearsal_scenarios"] = tuple(updates["rehearsal_scenarios"])
     if args.opponent_robots == 0 and args.opponent is None:
         updates["opponent"] = "none"
     if args.opponent == "none" and args.opponent_robots is None:

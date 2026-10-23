@@ -28,6 +28,8 @@ Para treinar um robô sozinho a buscar o disco e levar ao gol, selecione **Solo 
 
 Para executar a sequência **1v0 → velocidade → condução e gol → 1v1 → self-play**, use o [treino modular](docs/MODULAR_TRAINING.md): `python train_modular.py --run-dir runs/modular/MEU_TREINO --keep-awake`. Cada etapa exige aprovação em validação e confirmação separadas, preserva checkpoints e salva GIFs antes/depois em uma galeria local.
 
+O [plano de recuperação PPO](docs/PPO_RECOVERY.md) amplia gradualmente o posicionamento em torno do disco, revisa habilidades com episódios novos e usa proteção do crítico, entropia estável e KL sobre o lote inteiro. Execute com `--plan configs/training/modular_recovery.json --initial checkpoints/modular-carry-approved-20261022.pt` para partir da condução aprovada.
+
 **1v1 · self-play** treina contra versões congeladas da política em saídas, posições variadas, ataque e defesa. Há histórico de adversários nos checkpoints, avaliação contra bot e política inicial e modo **Humano × PPO** para você controlar o vermelho. A CLI aceita limite de horas/horário e inibição temporária de suspensão para [treino noturno](docs/OVERNIGHT_1V1.md).
 
 **Ver treino ao vivo** acompanha a coleta exploratória. **Avaliar últimos pesos** abre uma simulação independente com pesos congelados. **Pré-visualizar exercício** usa o bot tático e é identificado como prévia. A aba **Simular** preserva controle manual, pausa, arraste, impulso, tracking e replay. **1/2/3** alternam controlador; **P** pausa; **V** tracking; **Tab** seleciona; WASD/setas e espaço controlam o robô na bancada manual.

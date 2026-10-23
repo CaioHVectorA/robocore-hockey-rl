@@ -7,6 +7,7 @@ import math
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.distributions import Normal
 from vision.state import OBS_DIM, OBSERVATION_VERSION
 from core.file_io import atomic_destination
@@ -64,8 +65,18 @@ class HockeyPolicyNet(nn.Module):
         dist, value = self.distribution(obs)
         action = action.clamp(-1 + 1e-6, 1 - 1e-6)
         latent = torch.atanh(action)
-        logp = (dist.log_prob(latent) - torch.log1p(-action.square())).sum(-1)
+        logp = self.squashed_log_prob(dist, latent)
         return logp, value
+
+    @staticmethod
+    def squashed_log_prob(dist, latent):
+        # log(1 - tanh(z)^2), without cancellation or inverse-tanh at saturation.
+        log_jacobian = 2 * (math.log(2) - latent - F.softplus(-2 * latent))
+        return (dist.log_prob(latent) - log_jacobian).sum(-1)
+
+    def entropy(self, obs):
+        dist, _ = self.distribution(obs)
+        return -self.squashed_log_prob(dist, dist.rsample()).mean()
 
 
 @dataclass
@@ -93,6 +104,7 @@ class HockeyPPOTrainer:
         seed=0,
         target_kl=0.02,
         entropy_coef=0.002,
+        value_clip=0.0,
     ):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -102,6 +114,9 @@ class HockeyPPOTrainer:
         self.clip_eps = clip_eps
         self.target_kl = target_kl
         self.entropy_coef = entropy_coef
+        if not math.isfinite(value_clip) or value_clip < 0:
+            raise ValueError("Value clipping must be finite and nonnegative")
+        self.value_clip = value_clip
         self.device = torch.device(device)
         self.rng = np.random.default_rng(seed)
         self.net = HockeyPolicyNet(obs_dim, act_dim).to(self.device)
@@ -187,6 +202,11 @@ class HockeyPPOTrainer:
         def stack(key):
             return np.stack([getattr(t, key) for t in self.buffer])
 
+        if not all(
+            np.isfinite(stack(key)).all()
+            for key in ("obs", "action", "logp", "reward", "value", "next_value")
+        ):
+            raise ValueError("Non-finite PPO rollout; weights were not updated")
         advantages, returns = compute_gae(
             stack("reward"),
             stack("value"),
@@ -207,11 +227,21 @@ class HockeyPPOTrainer:
         old = tensor(stack("logp").reshape(-1))
         advt = tensor(adv)
         ret = tensor(returns.reshape(-1))
+        old_value = tensor(stack("value").reshape(-1))
+        if not all(torch.isfinite(x).all() for x in (obs, act, old, advt, ret, old_value)):
+            raise ValueError("Non-finite PPO rollout; weights were not updated")
+        with torch.no_grad():
+            reference, _ = self.net.distribution(obs)
+            reference = Normal(reference.mean.clone(), reference.stddev.clone())
+        actor_parameters = [*self.net.actor.parameters(), self.net.log_std]
+        critic_parameters = list(self.net.critic.parameters())
         losses = []
         kls = []
         clips = []
         entropies = []
+        policy_losses, value_losses, actor_norms, critic_norms = [], [], [], []
         stop = False
+        full_kl, completed_epochs = 0.0, 0
         for _ in range(epochs):
             for idx in np.array_split(
                 self.rng.permutation(len(obs)), max(1, math.ceil(len(obs) / batch_size))
@@ -222,26 +252,41 @@ class HockeyPPOTrainer:
                 policy = -torch.minimum(
                     ratio * advt[idx], ratio.clamp(1 - self.clip_eps, 1 + self.clip_eps) * advt[idx]
                 ).mean()
-                vloss = 0.5 * (value - ret[idx]).square().mean()
-                # Monte Carlo entropy estimate on fresh actions, including tanh Jacobian.
-                dist, _ = self.net.distribution(obs[idx])
-                sample = dist.rsample().tanh().clamp(-1 + 1e-6, 1 - 1e-6)
-                entropy = -self.net.evaluate(obs[idx], sample)[0].mean()
+                error = (value - ret[idx]).square()
+                if self.value_clip > 0:
+                    clipped = old_value[idx] + (value - old_value[idx]).clamp(
+                        -self.value_clip, self.value_clip
+                    )
+                    error = torch.maximum(error, (clipped - ret[idx]).square())
+                vloss = 0.5 * error.mean()
+                entropy = self.net.entropy(obs[idx])
                 loss = policy + 0.5 * vloss - self.entropy_coef * entropy
                 with torch.no_grad():
                     kl = ((ratio - 1) - logratio).mean().item()
-                if kl > 1.5 * self.target_kl:
-                    stop = True
-                    break
+                if not torch.isfinite(loss):
+                    raise ValueError("Non-finite PPO loss")
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
+                # A large critic error must not suppress the actor's learning signal.
+                actor_norm = nn.utils.clip_grad_norm_(actor_parameters, 0.5, error_if_nonfinite=True)
+                critic_norm = nn.utils.clip_grad_norm_(critic_parameters, 0.5, error_if_nonfinite=True)
                 self.optimizer.step()
                 losses.append(loss.item())
                 kls.append(kl)
                 clips.append(((ratio - 1).abs() > self.clip_eps).float().mean().item())
                 entropies.append(entropy.item())
-            if stop:
+                policy_losses.append(policy.item())
+                value_losses.append(vloss.item())
+                actor_norms.append(actor_norm.item())
+                critic_norms.append(critic_norm.item())
+            completed_epochs += 1
+            # Exact latent-Gaussian KL on the whole rollout, including the final
+            # optimizer step. Tanh is bijective, so the squashed KL is identical.
+            with torch.no_grad():
+                current, _ = self.net.distribution(obs)
+                full_kl = torch.distributions.kl_divergence(reference, current).sum(-1).mean().item()
+            if full_kl > self.target_kl:
+                stop = True
                 break
         variance = np.var(returns)
         explained = 1 - np.var(returns - stack("value")) / variance if variance > 1e-8 else 0.0
@@ -255,6 +300,15 @@ class HockeyPPOTrainer:
             explained_variance=float(explained),
             early_stop=stop,
             transitions=len(obs),
+            policy_loss=float(np.mean(policy_losses)),
+            value_loss=float(np.mean(value_losses)),
+            actor_grad_norm=float(np.mean(actor_norms)),
+            critic_grad_norm=float(np.mean(critic_norms)),
+            full_kl=full_kl,
+            epochs_completed=completed_epochs,
+            optimizer_steps=len(losses),
+            action_saturation=float((act.abs() > 0.98).float().mean().item()),
+            policy_std=float(self.net.log_std.detach().clamp(-3, 0.5).exp().mean().item()),
         )
         self.buffer.clear()
         return self.last_loss
@@ -279,6 +333,7 @@ class HockeyPPOTrainer:
                 clip_eps=self.clip_eps,
                 target_kl=self.target_kl,
                 entropy_coef=self.entropy_coef,
+                value_clip=self.value_clip,
             ),
             metadata=metadata or {},
         )
@@ -298,6 +353,7 @@ class HockeyPPOTrainer:
         self.environment_steps = ckpt["environment_steps"]
         self.updates_count = ckpt["updates_count"]
         if resume:
+            self.value_clip = 0.0  # Older checkpoints did not clip value estimates.
             for key, val in ckpt["hyperparameters"].items():
                 setattr(self, key, val)
             self.optimizer.load_state_dict(ckpt["optimizer_state"])
