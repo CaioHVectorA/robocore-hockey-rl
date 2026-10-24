@@ -8,10 +8,10 @@ import cv2
 import numpy as np
 import pygame
 
-from core.arena_geometry import arena_outline, arena_wall_segments
 from rl.env import RoboCoreHockeyEnv
 from rl.ppo_trainer import HockeyPPOTrainer
-from ui.robot_renderer import draw_robot
+from rl.training import frame_from_env
+from ui.arena_view import draw_arena
 
 ARTIFACT_DIR = Path(r"C:\Users\caihe\.gemini\antigravity\brain\4d9de323-c3e6-49f7-b3ae-6f2299acb331")
 OUTPUT_DIR = Path("videos")
@@ -202,60 +202,25 @@ def create_video():
             telem_surf = font_telemetry.render(telem_text, True, (88, 166, 255))
             surface.blit(telem_surf, (WIDTH - telem_surf.get_width() - 40, 25))
 
-            # --- ARENA VIEWPORT ---
-            pygame.draw.rect(surface, (16, 25, 38), arena_rect, border_radius=14)
-            pygame.draw.rect(surface, (38, 55, 78), arena_rect, width=2, border_radius=14)
+            # --- ARENA VIEWPORT (VISÃO COMPUTACIONAL ATIVA) ---
+            frame_data = frame_from_env(env)
+            draw_arena(
+                surface,
+                arena_rect,
+                arena,
+                env.engine.robot_config,
+                frame_data,
+                font_sub,
+                selected=0,
+                tracking=True,
+            )
 
-            # Rink floor
-            floor_pts = [world(x, y) for x, y in arena_outline(arena)]
-            pygame.draw.polygon(surface, (32, 43, 56), floor_pts)
-
-            # Goals
-            for sign in (-1, 1):
-                p, q = (
-                    world(sign * arena.half_length, arena.goal_width / 2),
-                    world(sign * (arena.half_length + arena.goal_depth), -arena.goal_width / 2),
-                )
-                goal_box = pygame.Rect(min(p[0], q[0]), min(p[1], q[1]), abs(q[0] - p[0]), abs(q[1] - p[1]))
-                color_bg = (24, 45, 75) if sign == -1 else (75, 28, 38)
-                color_line = (34, 113, 217) if sign == -1 else (213, 66, 80)
-                pygame.draw.rect(surface, color_bg, goal_box)
-                # Goal line
-                pygame.draw.line(
-                    surface,
-                    color_line,
-                    world(sign * arena.half_length, arena.goal_width / 2),
-                    world(sign * arena.half_length, -arena.goal_width / 2),
-                    3,
-                )
-
-            # Center markings
-            pygame.draw.line(surface, (55, 72, 92), world(0, arena.half_width), world(0, -arena.half_width), 2)
-            pygame.draw.circle(surface, (55, 72, 92), world(0, 0), round(20 * scale), 2)
-            pygame.draw.circle(surface, (88, 166, 255), world(0, 0), 4)
-
-            # Walls
-            for start, end in arena_wall_segments(arena):
-                p, q = world(*start), world(*end)
-                pygame.draw.line(surface, (180, 195, 210), p, q, 3)
-
-            # Robot
-            draw_robot(surface, world, r.x, r.y, r.theta, (34, 113, 217), env.engine.robot_config)
-
-            # Heading arrow
-            hx = r.x + math.cos(r.theta) * 12
-            hy = r.y + math.sin(r.theta) * 12
-            pygame.draw.line(surface, (255, 210, 80), world(r.x, r.y), world(hx, hy), 3)
-
-            # Puck
-            puck_center = world(env.engine.puck.x, env.engine.puck.y)
-            puck_r = max(4, round(arena.puck_radius * scale))
-            pygame.draw.circle(surface, (255, 170, 0), puck_center, puck_r)
-            pygame.draw.circle(surface, (255, 255, 255), puck_center, puck_r, 2)
-
-            # --- FOOTER BAR ---
-            footer_text = "RoboCore HockeyBot | PPO 350 RPM (1.600 Updates) | Acoes Reais e Deterministicas"
-            footer_surf = font_sub.render(footer_text, True, (110, 125, 145))
+            # --- FOOTER BAR (TELEMETRIA DE VISÃO COMPUTACIONAL) ---
+            footer_text = (
+                "Visão Computacional: 30 FPS | Rastreamento ArUco ID 0 (Círculo Verde) | "
+                "Filtro de Latência & Posição Ativo | Ações Determinísticas PPO 350 RPM"
+            )
+            footer_surf = font_sub.render(footer_text, True, (0, 200, 150))
             surface.blit(footer_surf, (40, HEIGHT - 45))
 
             # --- GOAL OVERLAY BANNER ---
