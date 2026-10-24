@@ -1,0 +1,38 @@
+{
+  "checkpoint": "checkpoints\\solo-1v0-mastery-20261024.pt",
+  "source": "runs\\modular\\solo-mastery-1v0\\04-search-score-mastery\\train-001\\latest.pt",
+  "sha256": "7b84ca6f85693d42da1fc71e167253cf8e171d10e2f37cdac79491c518af64d0",
+  "profile": "micro-practice",
+  "metrics": {
+    "solo_finish_regression_30ep": {
+      "wins": 30,
+      "episodes": 30,
+      "rate": 1.0
+    },
+    "solo_carry_regression_30ep": {
+      "wins": 30,
+      "episodes": 30,
+      "rate": 1.0
+    },
+    "solo_setup_75cm_180deg_30ep": {
+      "wins": 26,
+      "episodes": 30,
+      "rate": 0.8666666666666667
+    },
+    "solo_search_75cm_validation_50ep": {
+      "wins": 44,
+      "episodes": 50,
+      "rate": 0.88
+    },
+    "solo_search_75cm_confirmation_50ep": {
+      "wins": 46,
+      "episodes": 50,
+      "rate": 0.92
+    },
+    "solo_search_75cm_combined_100ep": {
+      "wins": 90,
+      "episodes": 100,
+      "rate": 0.9
+    }
+  }
+}

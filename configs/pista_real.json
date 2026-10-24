@@ -1,0 +1,14 @@
+{
+  "profile": "micro-practice",
+  "camera": 0,
+  "floor_corners_px": [
+    [662, 622],
+    [580, 52],
+    [198, 42],
+    [105, 615]
+  ],
+  "puck_hsv_lower": [0, 0, 0],
+  "puck_hsv_upper": [179, 255, 95],
+  "puck_diameter": 4.4,
+  "note": "Calibracao da pista real com cantos arredondados e gols recuados (micro-practice)"
+}
