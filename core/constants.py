@@ -91,7 +91,7 @@ class RobotConfig:
     wheel_diameter: float = 6.0
     wheel_width: float = 2.0
     tire_mass: float = 13.0  # Each tyre only; hubs belong to residual mass.
-    motor_free_rpm: float = 266.0
+    motor_free_rpm: float = 350.0
     motor_stall_torque_kgf_cm: float = 1.0
     motor_tau: float = 0.12
     tire_friction: float = 0.85

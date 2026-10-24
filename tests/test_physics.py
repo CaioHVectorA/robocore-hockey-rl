@@ -145,7 +145,7 @@ def test_stock_roles_have_identical_hardware_and_assembled_envelope():
     points = np.array(footprint_vertices(cfg))
     np.testing.assert_allclose(np.ptp(points, axis=0), [cfg.length, cfg.width], atol=1e-9)
     assert cfg.mass == 360 and cfg.wheel_diameter == 6 and cfg.wheel_width == 2
-    assert cfg.max_wheel_speed == pytest.approx(math.pi * 6 * 266 / 60)
+    assert cfg.max_wheel_speed == pytest.approx(math.pi * 6 * cfg.motor_free_rpm / 60)
 
 
 def test_real_concave_bay_is_open_and_forks_are_solid():

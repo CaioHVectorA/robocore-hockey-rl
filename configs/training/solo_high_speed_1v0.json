@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "threshold": 0.85,
+  "evaluation_episodes": 40,
+  "confirmation_episodes": 40,
+  "regression_episodes": 20,
+  "chunk_steps": 65536,
+  "max_stage_steps": 262144,
+  "plateau_checks": 4,
+  "base": {
+    "name": "Solo 1v0 High-Speed 350 RPM",
+    "profile": "micro-practice",
+    "robots_per_team": 1,
+    "opponent_robots": 0,
+    "objective": "score",
+    "scenario": "solo_carry",
+    "opponent": "none",
+    "steps": 65536,
+    "envs": 8,
+    "rollout": 512,
+    "episode_seconds": 20,
+    "seed": 42,
+    "learning_rate": 0.0001,
+    "gamma": 0.999,
+    "gae_lambda": 0.98,
+    "clip_eps": 0.2,
+    "target_kl": 0.015,
+    "entropy_coef": 0.004,
+    "epochs": 6,
+    "batch_size": 512,
+    "snapshot_every": 5,
+    "eval_every": 1000000,
+    "eval_episodes": 4,
+    "opponent_difficulty": 0.85,
+    "domain_randomization": true,
+    "spawn_distance": 55,
+    "random_heading": false,
+    "speed": 0.0,
+    "init_mode": "fresh",
+    "checkpoint": "",
+    "reward": {
+      "goal": 20.0,
+      "progress": 3.0,
+      "approach": 2.0,
+      "time_penalty": 0.006,
+      "energy_penalty": 0.0002,
+      "reach_bonus": 10.0,
+      "reach_distance": 10.0,
+      "alignment": 1.0,
+      "first_touch": 1.0,
+      "carry": 3.0,
+      "idle_penalty": 0.003,
+      "overspeed_penalty": 0.0
+    },
+    "curriculum_success_threshold": 0.75,
+    "curriculum_min_episodes": 30,
+    "curriculum_window": 50,
+    "selfplay_pool_size": 6,
+    "selfplay_anchor_probability": 0.2,
+    "evaluation_suite": false,
+    "curriculum_eval_gate": false,
+    "stagnation_patience": 400,
+    "heading_spread": 3.141592653589793,
+    "reach_speed_limit": 0.0,
+    "reset_critic": false,
+    "reset_exploration": false,
+    "value_clip": 0.5,
+    "rehearsal_scenarios": [],
+    "rehearsal_probability": 0.0
+  },
+  "modules": [
+    {
+      "id": "finish-fast",
+      "label": "1v0 · finalizacao veloz",
+      "retain": true,
+      "config": {
+        "scenario": "solo_finish"
+      }
+    },
+    {
+      "id": "carry-fast",
+      "label": "1v0 · conducao veloz ate o gol",
+      "retain": true,
+      "config": {
+        "scenario": "solo_carry",
+        "rehearsal_scenarios": [
+          "solo_finish"
+        ],
+        "rehearsal_probability": 0.20
+      }
+    },
+    {
+      "id": "setup-fast",
+      "label": "1v0 · contorno 180 graus e conducao veloz",
+      "retain": true,
+      "config": {
+        "scenario": "solo_setup",
+        "spawn_distance": 60,
+        "setup_spread": 3.141592653589793,
+        "heading_spread": 3.141592653589793,
+        "random_heading": true,
+        "rehearsal_scenarios": [
+          "solo_finish",
+          "solo_carry"
+        ],
+        "rehearsal_probability": 0.20
+      }
+    },
+    {
+      "id": "search-score-fast",
+      "label": "1v0 · busca livre, conducao e gol veloz",
+      "retain": true,
+      "config": {
+        "scenario": "solo_search",
+        "spawn_distance": 60,
+        "heading_spread": 3.141592653589793,
+        "rehearsal_scenarios": [
+          "solo_finish",
+          "solo_carry"
+        ],
+        "rehearsal_probability": 0.20
+      }
+    }
+  ]
+}
