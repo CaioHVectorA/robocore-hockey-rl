@@ -14,7 +14,6 @@ checkpoints/*.pt
 !checkpoints/foundation-candidate-20261022.pt
 !checkpoints/modular-carry-approved-20261022.pt
 checkpoints/*.tmp
-videos/
 runs/
 .codex-remote-attachments/
 .pytest_cache/
