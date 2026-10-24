@@ -331,9 +331,9 @@ class TrainingSession:
             return {}
         meta = trainer.load(cfg.checkpoint, resume=cfg.init_mode == "resume")
         old = meta.get("configuration", {})
-        if old.get("arena") != env.arena.to_dict() or old.get("robot") != asdict(RobotConfig()):
-            raise ValueError("Checkpoint and current arena/HockeyBot model differ")
         if cfg.init_mode == "resume":
+            if old.get("arena") != env.arena.to_dict() or old.get("robot") != asdict(RobotConfig()):
+                raise ValueError("Checkpoint and current arena/HockeyBot model differ")
             previous_config = meta.get("training_config", {})
             for key in (
                 "scenario",
