@@ -155,3 +155,20 @@ def test_heuristic_bots_generate_valid_actions():
         assert len(act) == 2
         assert -1.0 <= act[0] <= 1.0
         assert -1.0 <= act[1] <= 1.0
+
+
+def test_sumo_policy_net_forward_and_act():
+    from sumo.policy import SumoPolicyNet
+    import torch
+
+    policy = SumoPolicyNet()
+    obs = np.zeros(SUMO_OBS_DIM, dtype=np.float32)
+    act = policy.act(obs, deterministic=True)
+
+    assert act.shape == (SUMO_ACT_DIM,)
+    assert np.all(act >= -1.0) and np.all(act <= 1.0)
+
+    t_obs = torch.zeros((4, SUMO_OBS_DIM), dtype=torch.float32)
+    actor_out, critic_out = policy(t_obs)
+    assert actor_out.shape == (4, SUMO_ACT_DIM)
+    assert critic_out.shape == (4,)
