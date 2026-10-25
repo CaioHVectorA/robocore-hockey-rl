@@ -1,68 +1,71 @@
-"""Circular Dohyo geometry, line detection and raycast math."""
+"""Dohyo circular arena geometry, Tawaramono white border line, and Shikiri start poses."""
 
 import math
-from typing import Optional, Tuple
+from typing import Tuple
+
 from sumo.constants import DohyoConfig
 
 
 class Dohyo:
-    """Mathematical and geometric representation of the circular Mini-Sumo Dohyo."""
+    """Represents the 77 cm official Mini-Sumo circular Dohyo."""
 
-    def __init__(self, config: Optional[DohyoConfig] = None):
+    def __init__(self, config: DohyoConfig | None = None):
         self.config = config or DohyoConfig()
         self.radius = self.config.radius
         self.inner_radius = self.config.inner_radius
         self.border_width = self.config.border_width
-        self.friction = self.config.friction
 
-    def is_inside(self, x: float, y: float, margin: float = 0.0) -> bool:
-        """Return True if point (x, y) is within the Dohyo outer boundary."""
-        return math.hypot(x, y) <= (self.radius - margin)
-
-    def is_on_white_line(self, x: float, y: float) -> bool:
-        """Return True if point (x, y) is on the white Tawaramono border line."""
-        r = math.hypot(x, y)
-        return self.inner_radius <= r <= self.radius
+    def is_inside(self, x: float, y: float) -> bool:
+        """Return True if point (x, y) is within the outer edge of the Dohyo."""
+        return math.hypot(x, y) <= self.radius
 
     def line_sensor_intensity(self, x: float, y: float) -> float:
-        """Continuous [0, 1] reading of white line reflectivity under an IR sensor."""
+        """Compute optical reflectivity [0.0 (black surface) .. 1.0 (white Tawaramono border)].
+
+        Models a QRE1113 / TCRT5000 infrared reflectance sensor:
+        - Inside r < 35.8 cm: 0.0 (matte black polyurethane/steel surface)
+        - Across 35.8 <= r <= 38.5 cm: smooth high-contrast rise to 1.0 on the 2.5 cm white line
+        - Outside r > 38.5 cm: 1.0 (ring drop-off / out of bounds)
+        """
         r = math.hypot(x, y)
-        if r < self.inner_radius:
+        if r < self.inner_radius - 0.2:
             return 0.0
-        elif r <= self.radius:
-            # Transition cleanly across the 2.5 cm white border
-            frac = (r - self.inner_radius) / self.border_width
-            return min(1.0, max(0.0, frac * 1.5))
-        else:
-            # Off the ring (sensor detects void/floor drop)
-            return 1.0
+        if r <= self.radius:
+            frac = (r - (self.inner_radius - 0.2)) / (self.border_width + 0.2)
+            return min(1.0, max(0.0, frac * 1.6))
+        return 1.0
 
     def radial_distance(self, x: float, y: float) -> float:
-        """Distance from center of Dohyo."""
+        """Distance from center (0, 0) of the Dohyo in cm."""
         return math.hypot(x, y)
 
     def normalized_radial_pos(self, x: float, y: float) -> float:
-        """Radial position normalized to [0, 1] where 1.0 is the outer boundary."""
+        """Radial position normalized to [0, 1] where 1.0 is the outer edge."""
         return min(1.5, math.hypot(x, y) / self.radius)
 
-    def starting_positions(self, layout: str = "standard") -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-        """Return initial (x, y, theta) poses for robot 0 (Blue) and robot 1 (Red).
+    def starting_positions(
+        self, layout: str = "standard"
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        """Return official non-overlapping (x, y, theta) poses behind the Shikiri lines.
 
-        Layouts:
-        - standard: facing each other on Shikiri lines (separated by 10 cm)
-        - side_by_side: parallel facing opposite directions
-        - back_to_back: touching backs, facing away
-        - angle_45: angled approach
+        The two Shikiri lines are at x = -5.0 cm and x = +5.0 cm.
+        Since a 10 cm robot has half-length 5.0 cm, placing its center at x = +-13.0 cm
+        puts its front blade at x = +-8.0 cm (3 cm safely behind the Shikiri line,
+        with 16.0 cm clear distance between the two robots).
         """
-        sep = self.config.shikiri_separation / 2.0  # 5.0 cm from center
         if layout == "standard":
-            # Robot 0 at (-5, 0) facing right (0 rad), Robot 1 at (5, 0) facing left (pi rad)
-            return ((-sep, 0.0, 0.0), (sep, 0.0, math.pi))
-        elif layout == "back_to_back":
-            return ((-sep, 0.0, math.pi), (sep, 0.0, 0.0))
-        elif layout == "side_by_side":
-            return ((0.0, -sep, 0.0), (0.0, sep, math.pi))
-        elif layout == "angled":
-            return ((-sep, -sep, math.pi / 4), (sep, sep, -3 * math.pi / 4))
-        else:
-            return ((-sep, 0.0, 0.0), (sep, 0.0, math.pi))
+            # Face-to-face behind Shikiri lines
+            return ((-13.5, 0.0, 0.0), (13.5, 0.0, math.pi))
+        if layout == "back_to_back":
+            # Facing away from each other toward the borders
+            return ((-12.5, 0.0, math.pi), (12.5, 0.0, 0.0))
+        if layout == "side_by_side":
+            # Offset laterally, facing opposite directions (classic pass/flank start)
+            return ((-12.0, -8.5, 0.0), (12.0, 8.5, math.pi))
+        if layout == "angled":
+            # Diagonal approach
+            return ((-14.0, -9.0, math.radians(28.0)), (14.0, 9.0, math.radians(-152.0)))
+        if layout == "parallel_north":
+            # Both robots facing +y (+90 deg) behind their Shikiri lines
+            return ((-12.5, -2.0, math.pi / 2.0), (12.5, -2.0, math.pi / 2.0))
+        return ((-13.5, 0.0, 0.0), (13.5, 0.0, math.pi))
