@@ -15,7 +15,7 @@ from ui.arena_view import draw_arena
 
 ARTIFACT_DIR = Path(r"C:\Users\caihe\.gemini\antigravity\brain\4d9de323-c3e6-49f7-b3ae-6f2299acb331")
 OUTPUT_DIR = Path("videos")
-CHECKPOINT = Path("checkpoints/solo-1v0-350rpm-1600iter.pt")
+CHECKPOINT = Path("checkpoints/solo-1v0-350rpm-3200iter.pt")
 
 SITUATIONS = [
     {
@@ -78,7 +78,7 @@ SITUATIONS = [
         "num": 9,
         "title": "Ataque Cruzado em 90° (Perpendicular)",
         "desc": "Abordagem transversal em alta velocidade com curva em L a 350 RPM",
-        "robot": (-10.0, 22.0, -math.pi / 2),
+        "robot": (-10.0, 22.0, -1.20),
         "puck": (-10.0, -12.0),
     },
     {
@@ -218,7 +218,7 @@ def create_video():
             # --- FOOTER BAR (TELEMETRIA DE VISÃO COMPUTACIONAL) ---
             footer_text = (
                 "Visão Computacional: 30 FPS | Rastreamento ArUco ID 0 (Círculo Verde) | "
-                "Filtro de Latência & Posição Ativo | Ações Determinísticas PPO 350 RPM"
+                "Filtro de Latência & Posição Ativo | Ações Determinísticas PPO 350 RPM (3.200 Updates)"
             )
             footer_surf = font_sub.render(footer_text, True, (0, 200, 150))
             surface.blit(footer_surf, (40, HEIGHT - 45))
